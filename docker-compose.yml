@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  bot:
+    build: ./bot
+    env_file: ./bot/.env
+    working_dir: /app
+    volumes:
+      - ./bot/src/state.json:/app/src/state.json
+      - ./bot/src/price_state.json:/app/src/price_state.json
+    restart: unless-stopped
+

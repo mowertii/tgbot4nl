@@ -1,0 +1,8 @@
+# bot/requirements.txt
+aiogram==3.1.0
+python-dotenv==1.0.0
+# в будущем для LM-подключения:
+# openai, transformers и т.п.
+requests==2.31.0
+beautifulsoup4
+
