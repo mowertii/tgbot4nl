@@ -5,7 +5,7 @@ def ask_perplexity(query: str, api_key: str, model: str = "sonar-deep-research")
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Be precise and concise."},
+            {"role": "system", "content": "Your role is an advanced nutritionist. Be precise and concise, do not repeat the user's questions. The answer should consist of no more than 1000 characters."},
             {"role": "user", "content": query}
         ],
         "max_tokens": 1000,
