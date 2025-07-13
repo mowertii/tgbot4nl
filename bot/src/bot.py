@@ -3,12 +3,13 @@ import asyncio
 import logging
 import re
 import json
+import html
 from price_state import load_state, save_state
 from novelty_price_scraper import fetch_products
 from aiogram import Bot, Dispatcher, Router, types
 from dotenv import load_dotenv
 from aiogram.exceptions import TelegramBadRequest
-from perplexity import ask_perplexity, format_links_in_text
+from perplexity import ask_perplexity
 
 load_dotenv()
 
@@ -50,14 +51,35 @@ def clean_llm_answer(answer, user_query):
         answer = answer.replace(phrase, "")
     return answer.strip()
 
+def convert_markdown_links_to_html(text: str) -> str:
+    """
+    Преобразует Markdown-ссылки [текст](URL) в HTML-теги <a href="URL">текст</a>
+    с экранированием HTML-символов.
+    """
+    def replace_link(match):
+        link_text = html.escape(match.group(1))
+        url = html.escape(match.group(2), quote=True)
+        return f'<a href="{url}">{link_text}</a>'
+    
+    # Обрабатываем как стандартные Markdown-ссылки, так и сноски [1], [2]
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+    
+    # Дополнительно обрабатываем сноски вида [1]: http://example.com
+    footnote_pattern = re.compile(r'^\s*\[(\d+)\]:\s*(\S+)\s*$', re.MULTILINE)
+    footnotes = {num: url for num, url in footnote_pattern.findall(text)}
+    
+    for num, url in footnotes.items():
+        safe_url = html.escape(url, quote=True)
+        text = text.replace(f'[{num}]', f'<a href="{safe_url}">[{num}]</a>')
+    
+    # Удаляем блок сносок из текста
+    text = re.sub(r'\n\n\[(\d+)\]:\s*\S+\s*(\n\[(\d+)\]:\s*\S+\s*)*', '', text)
+    
+    return text
+
 async def send_long_message(bot, chat_id, text, parse_mode=None, **kwargs):
-    """
-    Отправляет длинное сообщение, разделяя его на части.
-    Принимает и передает parse_mode в метод bot.send_message.
-    """
     limit = 4096
     for i in range(0, len(text), limit):
-        # КЛЮЧЕВОЙ МОМЕНТ 1: Параметр parse_mode передается в метод отправки сообщения aiogram.
         await bot.send_message(chat_id, text[i:i+limit], parse_mode=parse_mode, **kwargs)
 
 @router.channel_post()
@@ -80,16 +102,13 @@ async def channel_post_handler(message: types.Message):
 
     raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query, PERPLEXITY_API_KEY)
     cleaned_answer = clean_telegram_html(raw_answer)
-    # Здесь текст подготавливается с HTML-тегами
-    answer_with_links = format_links_in_text(cleaned_answer)
+    answer_with_links = convert_markdown_links_to_html(cleaned_answer)
 
     if mention:
         reply_text = f"{mention}, {answer_with_links}"
     else:
         reply_text = answer_with_links
 
-    # КЛЮЧЕВОЙ МОМЕНТ 2: При вызове функции отправки явно указывается режим разметки "HTML".
-    # Это главная инструкция для Telegram, чтобы он обработал теги <a>.
     await send_long_message(
         bot=message.bot,
         chat_id=message.chat.id,

@@ -1,39 +1,30 @@
 import requests
 import re
 
-def format_links_in_text(text: str) -> str:
-    """
-    Находит все URL-адреса в тексте и преобразует их в HTML-гиперссылки.
-    Например, 'https://google.com' станет '<a href="https://google.com">https://google.com</a>'.
-    """
-    # Регулярное выражение для поиска URL-адресов
-    url_pattern = re.compile(r'https?://\S+')
-
-    # Функция для замены найденного URL на HTML-тег. Эта часть кода работает правильно.
-    def replacer(match):
-        url = match.group(0)
-        # Создается корректный HTML-тег для ссылки
-        return f'<a href="{url}">{url}</a>'
-
-    return url_pattern.sub(replacer, text)
-
 def ask_perplexity(query: str, api_key: str, model: str = "sonar-pro") -> str:
     """
-    Отправляет запрос к Perplexity API с настроенной ролью нутрициолога.
+    Отправляет запрос к Perplexity API и возвращает ответ с Markdown-разметкой.
+    Ссылки возвращаются в формате [текст](URL) или [1], [2] с блоком сносок в конце.
     """
     url = "https://api.perplexity.ai/chat/completions"
 
     system_prompt = "Твоя роль — Нутрициолог-эксперт от компании NL INTERNATIONAL, совмещающий науку и народную медицину."
     user_instructions = f"""
 Инструкции для ответа:
-- Будь честным, точным, кратким, актуальными и структурированным.
-- НЕ используй мысли вслух.
-- Предоставляй только те рекомендации, которые подтверждены актуальными данными из поисковых систем.
-- Предоставь только конечный, практический совет.
-- Если есть рекомендация применения витаминов или бадов, то упомяни о соответствующих продуктах из имеющихся в продаже.
-- В конце добавь дисклеймер: 'Информация носит ознакомительный характер и не заменяет консультацию врача.'
-Вопрос пользователя: "{query}"
-- Оформляй ссылки на справочные материалы и источники в формате markdown, например так [Тест](https://test.com).
+- Отвечай строго на русском языке
+- Будь честным, точным, кратким, актуальным и структурированным
+- НЕ используй мысли вслух
+- Предоставляй только подтвержденные данные
+- Давай практические рекомендации
+- При упоминании витаминов/БАДов указывай конкретные продукты
+- Всегда оформляй ссылки в Markdown:
+  - Для обычных ссылок: [текст](https://example.com)
+  - Для сносок: в тексте [1], [2], а в конце сообщения добавь блок:
+    [1]: https://source1.com
+    [2]: https://source2.com
+- В конце добавь: 'Информация носит ознакомительный характер и не заменяет консультацию врача.'
+
+Вопрос: "{query}"
 """
 
     payload = {
@@ -54,7 +45,17 @@ def ask_perplexity(query: str, api_key: str, model: str = "sonar-pro") -> str:
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+        
+        # Получаем чистый текст с Markdown-разметкой
+        answer = data["choices"][0]["message"]["content"]
+        
+        # Удаляем возможные дублирования дисклеймера
+        disclaimer = "Информация носит ознакомительный характер"
+        if answer.count(disclaimer) > 1:
+            answer = answer.replace(disclaimer, "", answer.count(disclaimer)-1)
+        
+        return answer
+        
     except requests.exceptions.HTTPError as http_err:
         print(f"HTTP ошибка: {http_err}\nТекст ответа: {response.text}")
         return f"Ошибка API: {response.status_code}. Подробности в логах."
