@@ -1,8 +1,4 @@
-# bot/requirements.txt
-beautifulsoup4
 aiogram==3.4.1
-tenacity==8.3.0
 python-dotenv==1.0.1
 requests==2.32.0
-numpy
-pandas
+beautifulsoup4==4.12.3
