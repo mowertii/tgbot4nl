@@ -2,25 +2,34 @@ import re
 import html
 
 def clean_telegram_html(text: str) -> str:
-    """Очистка Telegram-специфичных тегов"""
     return re.sub(r"</?think>", "", text)
 
-def clean_llm_answer(answer: str, user_query: str) -> str:
-    """Очистка ответа от LLM от лишних фраз"""
-    phrases = [
-        "Мы получили запрос", "Вы спросили", "Ваш вопрос",
-        "Вопрос:", "Запрос:", "Пользователь спросил",
-    ]
-    for phrase in phrases:
-        answer = answer.replace(phrase, "")
-    return answer.strip()
-
 def convert_markdown_links_to_html(text: str) -> str:
-    """Преобразование Markdown-ссылок в HTML"""
-    def replace_link(match):
-        link_text = html.escape(match.group(1))
-        url = html.escape(match.group(2), quote=True)
-        return f'<a href="{url}">{link_text}</a>'
+    # Обработка сносок вида [1], [2] с ссылками в конце
+    footnote_refs = {}
     
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
-    return text
+    # Шаг 1: Собираем все сноски вида [1]: URL
+    def collect_footnotes(match):
+        num = match.group(1)
+        url = match.group(2)
+        footnote_refs[num] = url
+        return ""  # Удаляем строку сноски из текста
+    
+    text = re.sub(r'^\[(\d+)\]:\s*(\S+)$', collect_footnotes, text, flags=re.MULTILINE)
+    
+    # Шаг 2: Заменяем упоминания [1] на ссылки
+    if footnote_refs:
+        def replace_footnote(match):
+            num = match.group(1)
+            url = footnote_refs.get(num)
+            if url:
+                return f'<a href="{html.escape(url, quote=True)}">[{num}]</a>'
+            return match.group(0)
+        
+        text = re.sub(r'\[(\d+)\]', replace_footnote, text)
+    
+    # Шаг 3: Обработка обычных Markdown ссылок
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)

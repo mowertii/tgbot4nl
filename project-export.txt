@@ -1,0 +1,5406 @@
+PROJECT EXPORT
+
+PROJECT STRUCTURE:
+
+📁 bot
+  📁 src
+    📄 bot.py
+    📄 config.py
+    📄 database.py
+    📄 perplexity.py
+    📄 postgres_db.py
+    📄 scraper.py
+    📄 state_utils.py
+    📄 telegram_utils.py
+    📄 text_utils.py
+  📄 .env
+  📄 Dockerfile
+  📄 requirements.txt
+📁 data
+📁 logs
+📁 pgadmin
+  📄 setup.sh
+📄 .env
+📄 .env.dev
+📄 .gitignore
+📄 dev.sh
+📄 docker-compose.dev.yml
+📄 docker-compose.infrastructure.yml
+📄 docker-compose.yml
+📄 Makefile
+📄 project-export.txt
+📄 README.md
+
+FILES:
+
+=== dev.sh ===
+
+#!/bin/bash
+# dev.sh - скрипт для разработки
+
+case "$1" in
+    "start")
+        echo "Запуск инфраструктуры..."
+        docker-compose -f docker-compose.infrastructure.yml up -d
+        echo "Ожидание запуска БД..."
+        sleep 10
+        echo "Запуск бота в режиме разработки..."
+        docker-compose -f docker-compose.dev.yml up --build
+        ;;
+    "stop")
+        echo "Остановка бота..."
+        docker-compose -f docker-compose.dev.yml down
+        ;;
+    "restart")
+        echo "Перезапуск бота..."
+        docker-compose -f docker-compose.dev.yml down
+        docker-compose -f docker-compose.dev.yml up --build
+        ;;
+    "infra-stop")
+        echo "Остановка инфраструктуры..."
+        docker-compose -f docker-compose.infrastructure.yml down
+        ;;
+    "logs")
+        docker-compose -f docker-compose.dev.yml logs -f
+        ;;
+    "status")
+        echo "=== Инфраструктура ==="
+        docker-compose -f docker-compose.infrastructure.yml ps
+        echo "=== Разработка ==="
+        docker-compose -f docker-compose.dev.yml ps
+        ;;
+    *)
+        echo "Использование: $0 {start|stop|restart|infra-stop|logs|status}"
+        echo ""
+        echo "start       - Запуск инфраструктуры и бота"
+        echo "stop        - Остановка только бота"
+        echo "restart     - Перезапуск только бота"
+        echo "infra-stop  - Остановка инфраструктуры"
+        echo "logs        - Просмотр логов бота"
+        echo "status      - Статус всех сервисов"
+        exit 1
+        ;;
+esac
+
+
+========================================
+
+=== README.md ===
+
+##Settings for connect
+Host name/address: db
+Port: 5432
+Maintenance database: nlstore
+Username: {your_username}
+Password: {your_pass}
+
+
+#work with db throw query service:
+#check catalog
+SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false;
+
+#check tables
+SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+
+----
+# Makefile для управления проектом (создать файл Makefile в корне проекта, без расширения со следующим содержимым)
+
+# Запуск инфраструктуры (БД + pgAdmin)
+infra-up:
+	docker-compose -f docker-compose.infrastructure.yml up -d
+
+# Остановка инфраструктуры
+infra-down:
+	docker-compose -f docker-compose.infrastructure.yml down
+
+# Запуск для разработки (только бот)
+dev-up:
+	docker-compose -f docker-compose.dev.yml up --build
+
+# Остановка разработки
+dev-down:
+	docker-compose -f docker-compose.dev.yml down
+
+# Перезапуск только бота
+dev-restart:
+	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml up --build
+
+# Запуск продакшена
+prod-up:
+	docker-compose -f docker-compose.prod.yml up -d
+
+# Логи разработки
+dev-logs:
+	docker-compose -f docker-compose.dev.yml logs -f
+
+# Подключение к БД
+db-connect:
+	docker exec -it $$(docker ps -q -f "name=db") psql -U mawr -d nlstore
+
+# Статус всех сервисов
+status:
+	@echo "=== Инфраструктура ==="
+	docker-compose -f docker-compose.infrastructure.yml ps
+	@echo "=== Разработка ==="
+	docker-compose -f docker-compose.dev.yml ps
+
+.PHONY: infra-up infra-down dev-up dev-down dev-restart prod-up dev-logs db-connect status
+
+----
+Управление
+Команда	Описание
+make infra-up	Запуск БД и pgAdmin
+make dev-up	Запуск бота для разработки
+make dev-restart	Быстрый перезапуск бота
+make dev-logs	Просмотр логов
+make infra-down	Остановка инфраструктуры
+make status	Статус всех сервисов
+
+========================================
+
+=== bot\.env ===
+
+#bot/.env
+BOT_TOKEN=${BOT_TOKEN}
+CHANNEL_ID=${CHANNEL_ID}
+PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+CHECK_INTERVAL=${CHECK_INTERVAL}
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${POSTGRES_DB}
+DB_USER=${POSTGRES_USER}
+DB_PASSWORD=${POSTGRES_PASSWORD}
+
+========================================
+
+=== bot\src\text_utils.py ===
+
+import re
+import html
+
+def clean_telegram_html(text: str) -> str:
+    return re.sub(r"</?think>", "", text)
+
+def convert_markdown_links_to_html(text: str) -> str:
+    # Обработка сносок вида [1], [2] с ссылками в конце
+    footnote_refs = {}
+    
+    # Шаг 1: Собираем все сноски вида [1]: URL
+    def collect_footnotes(match):
+        num = match.group(1)
+        url = match.group(2)
+        footnote_refs[num] = url
+        return ""  # Удаляем строку сноски из текста
+    
+    text = re.sub(r'^\[(\d+)\]:\s*(\S+)$', collect_footnotes, text, flags=re.MULTILINE)
+    
+    # Шаг 2: Заменяем упоминания [1] на ссылки
+    if footnote_refs:
+        def replace_footnote(match):
+            num = match.group(1)
+            url = footnote_refs.get(num)
+            if url:
+                return f'<a href="{html.escape(url, quote=True)}">[{num}]</a>'
+            return match.group(0)
+        
+        text = re.sub(r'\[(\d+)\]', replace_footnote, text)
+    
+    # Шаг 3: Обработка обычных Markdown ссылок
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+
+========================================
+
+=== bot\src\config.py ===
+
+# bot/src/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+
+========================================
+
+=== bot\src\telegram_utils.py ===
+
+import logging
+from aiogram import Bot
+
+logger = logging.getLogger(__name__)
+
+async def send_long_message(bot: Bot, chat_id: int, text: str, parse_mode=None, **kwargs):
+    limit = 4096
+    for i in range(0, len(text), limit):
+        part = text[i:i+limit]
+        await bot.send_message(chat_id, part, parse_mode=parse_mode, **kwargs)
+
+========================================
+
+=== bot\src\bot.py ===
+
+import os
+import asyncio
+import logging
+from perplexity import init_perplexity, ask_perplexity
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
+
+# Исправленные импорты (убраны точки)
+from state_utils import load_state, save_state, load_pinned_message_id, save_pinned_message_id
+from scraper import fetch_products
+from perplexity import ask_perplexity, init_perplexity
+from telegram_utils import send_long_message
+from text_utils import clean_telegram_html, convert_markdown_links_to_html
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "18000"))
+
+
+
+# Инициализация Perplexity API
+if PERPLEXITY_API_KEY:
+    init_perplexity(PERPLEXITY_API_KEY)
+    answer = ask_perplexity("Какая польза у коллагена?")
+    
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.channel_post()
+async def channel_post_handler(message: types.Message):
+    if not PERPLEXITY_API_KEY:
+        await message.reply("Perplexity API ключ не задан.")
+        return
+
+    user_query = message.text
+    if not user_query:
+        return
+
+    try:
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.full_name}</a>' if message.from_user else None
+
+        await message.reply("Запрос отправлен, ожидайте ответа...")
+        logger.info(f"Обработка запроса: {user_query[:50]}...")
+        
+        loop = asyncio.get_event_loop()
+        raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query)
+        
+        cleaned_answer = clean_telegram_html(raw_answer)
+        answer_with_links = convert_markdown_links_to_html(cleaned_answer)
+
+        reply_text = f"{mention}, {answer_with_links}" if mention else answer_with_links
+ 
+        await send_long_message(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text=reply_text,
+            parse_mode="HTML",  # Важно использовать HTML-парсинг
+            disable_web_page_preview=True
+        )
+        logger.info("Ответ успешно отправлен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        await message.reply("Произошла ошибка при обработке вашего запроса.")
+
+async def price_scraping_loop(bot: Bot):
+    await asyncio.sleep(10)
+    logger.info("Запущен цикл отслеживания цен")
+    
+    while True:
+        try:
+            products = fetch_products()
+            old_state = load_state()
+            pinned_message_id = load_pinned_message_id()
+            new_state = {}
+            price_drop_messages = []
+            price_increase_detected = False
+
+            for product in products:
+                try:
+                    product_id = str(product.get('id', ''))
+                    product_name = str(product.get('name', 'Без названия'))
+                    
+                    # Обработка цены
+                    new_price = product.get('price', 0)
+                    if isinstance(new_price, dict):
+                        new_price = new_price.get('current', 0)
+                    new_price = float(new_price)
+                    
+                    # Если товара нет в старом состоянии
+                    if product_id not in old_state:
+                        new_state[product_id] = {
+                            'price': new_price,
+                            'last_notified_price': new_price
+                        }
+                        continue
+                    
+                    # Получаем данные из старого состояния
+                    state_data = old_state.get(product_id, {})
+                    old_price = float(state_data.get('price', new_price))
+                    last_notified = float(state_data.get('last_notified_price', old_price))
+                    
+                    # Сохраняем новое состояние
+                    new_state[product_id] = {
+                        'price': new_price,
+                        'last_notified_price': last_notified
+                    }
+
+                    # Проверяем изменения цены
+                    if new_price < old_price and new_price != last_notified:
+                        msg = f"📉 Цена на '{product_name}' снизилась: {old_price} ₽ → {new_price} ₽"
+                        price_drop_messages.append(msg)
+                        new_state[product_id]['last_notified_price'] = new_price
+                    elif new_price > old_price:
+                        price_increase_detected = True
+                        new_state[product_id]['last_notified_price'] = new_price
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Пропускаем товар: {e}")
+
+            if price_drop_messages:
+                full_message = "🔥 **АКЦИЯ!**\n\n" + "\n".join(price_drop_messages)
+                sent_message = await bot.send_message(CHANNEL_ID, full_message, parse_mode="Markdown")
+                await bot.pin_chat_message(CHANNEL_ID, sent_message.message_id)
+                save_pinned_message_id(sent_message.message_id)
+            elif price_increase_detected and pinned_message_id:
+                await bot.unpin_chat_message(CHANNEL_ID, pinned_message_id)
+                save_pinned_message_id(None)
+
+            save_state(new_state)
+            logger.info(f"Обработано {len(products)} товаров, изменений: {len(price_drop_messages)}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле отслеживания цен: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+        
+@router.message(Command("stats"))
+async def send_stats(message: types.Message):
+    try:
+        stats = "📊 Статистика базы данных:\n"
+        stats += f"• Доступ в pgAdmin: http://localhost:6432\n"
+        stats += f"  Логин: admin@admin.com\n"
+        stats += f"  Пароль: metallica"
+        await message.reply(stats)
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await message.reply("Ошибка получения статистики")
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    asyncio.create_task(price_scraping_loop(bot))
+    logger.info("Бот запущен и слушает канал...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+========================================
+
+=== bot\src\state_utils.py ===
+
+import logging
+from database import Database 
+
+logger = logging.getLogger(__name__)
+
+def load_state():
+    try:
+        db = Database.get_instance()
+        return db.load_state('price_state')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+        return {}
+
+def save_state(state):
+    try:
+        db = Database.get_instance()
+        db.save_state('price_state', state)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_pinned_message_id():
+    try:
+        db = Database.get_instance()
+        state = db.load_state('pinned_message')
+        return state.get('pinned_message_id')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки закрепленного сообщения: {e}")
+        return None
+
+def save_pinned_message_id(message_id):
+    try:
+        db = Database.get_instance()
+        db.save_state('pinned_message', {'pinned_message_id': message_id})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения закрепленного сообщения: {e}")
+
+========================================
+
+=== bot\src\perplexity.py ===
+
+import requests
+import logging
+from typing import List, Dict, Optional
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
+class PerplexityAPI:
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.db = ProductDatabase()
+        self.db.sync_demo_products()
+
+    # Делаем retry: 3 попытки, пауза 3 сек, только если timeout!
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(3),
+        retry=retry_if_exception_type(requests.exceptions.Timeout)
+    )
+    def _ask(self, payload, headers):
+        response = requests.post(
+            self.BASE_URL,
+            json=payload,
+            headers=headers,
+            timeout=12  # уменьшили до 12 секунд!
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def ask(self, query: str) -> str:
+        try:
+            relevant = self.db.search_products(query)
+            product_context = ""
+            if relevant:
+                product_context = "\n\n### Информация о продуктах:\n"
+                for prod in relevant:
+                    product_context += (
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
+                    )
+            system_prompt = (
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
+                f"{product_context}"
+            )
+            # В методе ask класса PerplexityAPI
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Для источников используй сноски в формате: [1], [2] в тексте\n"
+                "- В конце сообщения добавь список источников в формате:\n"
+                "      [1]: полный_URL_источника\n"
+                "      [2]: полный_URL_источника\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com/ref/aU37in)\n"
+                f'Вопрос: "{query}"'
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.3,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            # Используем защищённый вызов с повтором
+            resp_json = self._ask(payload, headers)
+            return resp_json["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            logger.error("Timeout при обращении к Perplexity API.")
+            return "Сервер перегружен, не удалось получить ответ за разумное время. Попробуйте повторить позже."
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
+
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
+
+def init_perplexity(api_key: str):
+    global perplexity_api
+    perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
+
+
+========================================
+
+=== bot\src\scraper.py ===
+
+import requests
+import logging
+from database import Database
+
+logger = logging.getLogger(__name__)
+
+def fetch_products():
+    try:
+        url = "https://ng.nlstar.com/ru/api/store/city/2214/all-products/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        logger.info(f"Запрос данных с {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        products = data.get("products", [])
+        logger.info(f"Получено {len(products)} товаров")
+        
+        # Нормализация данных
+        normalized = []
+        for p in products:
+            try:
+                # Обработка цены
+                price = p.get('price', 0)
+                if isinstance(price, dict):
+                    # Если цена приходит в виде словаря, берем основное значение
+                    price = price.get('current', 0)
+                if isinstance(price, str):
+                    price = price.replace(' ', '').replace(',', '.')
+                
+                # Преобразуем в float
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = 0.0
+                
+                normalized.append({
+                    'id': str(p.get('id', '')),
+                    'name': str(p.get('name') or p.get('short_name') or "Без названия"),
+                    'short_name': str(p.get('short_name', '')),
+                    'price': price,
+                    'category': str(p.get('category', ''))})
+            except Exception as e:
+                logger.error(f"Ошибка обработки товара: {e}")
+        
+        # Сохраняем в БД
+        db = Database.get_instance()
+        saved = db.save_products(normalized)
+        logger.info(f"Сохранено {saved} товаров в БД")
+        
+        return normalized
+    except Exception as e:
+        logger.error(f"Ошибка получения продуктов: {e}")
+        return []
+
+========================================
+
+=== bot\src\database.py ===
+
+import psycopg2
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=10, delay=2):
+        """Подключение к базе данных с улучшенной логикой повторных попыток"""
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "localhost"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica"),
+                    connect_timeout=10
+                )
+                self.conn.autocommit = True
+                logger.info(f"Успешное подключение к PostgreSQL на {os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}")
+                return
+            except psycopg2.OperationalError as e:
+                logger.warning(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+                else:
+                    logger.error("Не удалось подключиться к PostgreSQL после всех попыток")
+                    raise
+            except Exception as e:
+                logger.error(f"Неожиданная ошибка подключения к БД: {e}")
+                raise
+    
+    def reconnect(self):
+        """Переподключение к базе данных"""
+        if self.conn:
+            try:
+                self.conn.close()
+            except:
+                pass
+        self.connect()
+    
+    def execute_with_retry(self, query, params=None, retries=3):
+        """Выполнение запроса с повторными попытками при потере соединения"""
+        for i in range(retries):
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    return cursor.fetchall() if cursor.description else None
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"Потеря соединения с БД, попытка переподключения ({i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    try:
+                        self.reconnect()
+                    except Exception as reconnect_error:
+                        logger.error(f"Ошибка переподключения: {reconnect_error}")
+                        time.sleep(2)
+                else:
+                    logger.error("Не удалось восстановить соединение с БД")
+                    raise
+    
+    def create_tables(self):
+        if not self.conn:
+            logger.error("Нет подключения к БД для создания таблиц")
+            return
+            
+        try:
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id VARCHAR(50) PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    short_name TEXT,
+                    price FLOAT NOT NULL,
+                    category TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id SERIAL PRIMARY KEY,
+                    product_id VARCHAR(50) NOT NULL,
+                    price FLOAT NOT NULL,
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    key VARCHAR(50) PRIMARY KEY,
+                    value JSONB NOT NULL
+                )
+            """)
+            
+            logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+    
+    def save_products(self, products):
+        if not self.conn or not products:
+            return 0
+            
+        saved_count = 0
+        try:
+            for product in products:
+                try:
+                    # Проверяем и преобразуем данные
+                    product_id = str(product.get('id', ''))
+                    name = str(product.get('name', ''))
+                    short_name = str(product.get('short_name', ''))
+                    price = float(product.get('price', 0))
+                    category = str(product.get('category', ''))
+                    
+                    self.execute_with_retry("""
+                        INSERT INTO products (id, name, short_name, price, category)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            short_name = EXCLUDED.short_name,
+                            price = EXCLUDED.price,
+                            category = EXCLUDED.category,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (product_id, name, short_name, price, category))
+                    
+                    self.execute_with_retry("""
+                        INSERT INTO price_history (product_id, price)
+                        VALUES (%s, %s)
+                    """, (product_id, price))
+                    
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"Общая ошибка при сохранении товаров: {e}")
+        
+        return saved_count
+    
+    def save_state(self, key, state):
+        if not self.conn:
+            return
+            
+        try:
+            self.execute_with_retry("""
+                INSERT INTO bot_state (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value
+            """, (key, json.dumps(state)))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
+    
+    def load_state(self, key):
+        if not self.conn:
+            return {}
+            
+        try:
+            result = self.execute_with_retry("SELECT value FROM bot_state WHERE key = %s", (key,))
+            return json.loads(result[0][0]) if result else {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки состояния: {e}")
+            return {}
+
+
+========================================
+
+=== bot\src\postgres_db.py ===
+
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class PostgresDB:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PostgresDB, cls).__new__(cls)
+            cls._instance._init_db()
+        return cls._instance
+    
+    def _init_db(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL после нескольких попыток")
+    
+    def create_tables(self):
+        try:
+            with self.conn.cursor() as cursor:
+                # Таблица продуктов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица истории цен
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица состояния
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+
+    def save_products(self, products):
+        if not products:
+            logger.warning("Нет продуктов для сохранения")
+            return
+        
+        logger.info(f"Сохранение {len(products)} товаров в БД...")
+        saved_count = 0
+        
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Сохраняем продукт
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (
+                            product['id'],
+                            product.get('name', ''),
+                            product.get('short_name', ''),
+                            product['price'],
+                            product.get('category', '')
+                        ))
+                        
+                        # Сохраняем в историю цен
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (
+                            product['id'],
+                            product['price']
+                        ))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+            
+            logger.info(f"Успешно сохранено {saved_count} товаров")
+            return saved_count
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении товаров: {e}")
+            return 0
+
+========================================
+
+=== bot\Dockerfile ===
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src
+
+# Явно указываем рабочую директорию для src
+WORKDIR /app/src
+
+CMD ["python", "-u", "bot.py"]
+
+========================================
+
+=== bot\requirements.txt ===
+
+aiogram==3.4.1
+python-dotenv==1.0.1
+requests==2.32.0
+beautifulsoup4==4.12.3
+psycopg2-binary==2.9.9
+tenacity
+
+
+========================================
+
+=== .env ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+DB_HOST=db
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== pgadmin\setup.sh ===
+
+#!/bin/bash
+
+# Ожидаем запуск pgAdmin
+while ! curl -s http://localhost:80 > /dev/null; do
+  echo "Ожидание запуска pgAdmin..."
+  sleep 5
+done
+
+# Добавляем сервер
+curl -v -X POST "http://localhost:80/browser/server/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "NL Store DB",
+    "host": "db",
+    "port": 5432,
+    "username": "'"$POSTGRES_USER"'",
+    "password": "'"$POSTGRES_PASSWORD"'",
+    "db": "'"$POSTGRES_DB"'",
+    "sslmode": "prefer"
+  }'
+
+echo "Сервер NL Store DB успешно добавлен в pgAdmin"
+
+========================================
+
+=== docker-compose.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src  # Рабочая директория теперь в src
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ./.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+========================================
+
+=== docker-compose.dev.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src
+    environment:
+      - DB_HOST=localhost
+    network_mode: "host"
+    restart: unless-stopped
+    depends_on: []
+
+
+========================================
+
+=== .gitignore ===
+
+# Data files
+*.json
+*.db
+*.csv
+.*
+
+# Environment
+.env
+venv/
+bot/.env
+
+# Docker
+data/
+
+========================================
+
+=== .env.dev ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+
+# Database settings for development (localhost)
+DB_HOST=localhost
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== Makefile ===
+
+# Makefile для управления проектом
+
+# Запуск инфраструктуры (БД + pgAdmin)
+infra-up:
+	docker-compose -f docker-compose.infrastructure.yml up -d
+
+# Остановка инфраструктуры
+infra-down:
+	docker-compose -f docker-compose.infrastructure.yml down -v
+
+# Запуск для разработки (только бот)
+dev-up:
+	docker-compose -f docker-compose.dev.yml up --build -d
+
+# Остановка разработки
+dev-down:
+	docker-compose -f docker-compose.dev.yml down
+
+# Перезапуск только бота
+dev-restart:
+	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml up --build -d
+
+# Запуск продакшена
+prod-up:
+	docker-compose -f docker-compose.prod.yml up -d
+
+# Логи разработки
+dev-logs:
+	docker-compose -f docker-compose.dev.yml logs -f
+
+# Подключение к БД
+db-connect:
+	docker exec -it $$(docker ps -q -f "name=db") psql -U mawr -d nlstore
+
+# Статус всех сервисов
+status:
+	@echo "=== Инфраструктура ==="
+	docker-compose -f docker-compose.infrastructure.yml ps
+	@echo "=== Разработка ==="
+	docker-compose -f docker-compose.dev.yml ps
+
+.PHONY: infra-up infra-down dev-up dev-down dev-restart prod-up dev-logs db-connect status
+
+
+========================================
+
+=== project-export.txt ===
+
+PROJECT EXPORT
+
+PROJECT STRUCTURE:
+
+📁 bot
+  📁 src
+    📄 bot.py
+    📄 config.py
+    📄 database.py
+    📄 perplexity.py
+    📄 postgres_db.py
+    📄 scraper.py
+    📄 state_utils.py
+    📄 telegram_utils.py
+    📄 text_utils.py
+  📄 .env
+  📄 Dockerfile
+  📄 requirements.txt
+📁 data
+📁 logs
+📁 pgadmin
+  📄 setup.sh
+📄 .env
+📄 .env.dev
+📄 .gitignore
+📄 dev.sh
+📄 docker-compose.dev.yml
+📄 docker-compose.infrastructure.yml
+📄 docker-compose.yml
+📄 Makefile
+📄 project-export.txt
+📄 README.md
+
+FILES:
+
+=== dev.sh ===
+
+#!/bin/bash
+# dev.sh - скрипт для разработки
+
+case "$1" in
+    "start")
+        echo "Запуск инфраструктуры..."
+        docker-compose -f docker-compose.infrastructure.yml up -d
+        echo "Ожидание запуска БД..."
+        sleep 10
+        echo "Запуск бота в режиме разработки..."
+        docker-compose -f docker-compose.dev.yml up --build
+        ;;
+    "stop")
+        echo "Остановка бота..."
+        docker-compose -f docker-compose.dev.yml down
+        ;;
+    "restart")
+        echo "Перезапуск бота..."
+        docker-compose -f docker-compose.dev.yml down
+        docker-compose -f docker-compose.dev.yml up --build
+        ;;
+    "infra-stop")
+        echo "Остановка инфраструктуры..."
+        docker-compose -f docker-compose.infrastructure.yml down
+        ;;
+    "logs")
+        docker-compose -f docker-compose.dev.yml logs -f
+        ;;
+    "status")
+        echo "=== Инфраструктура ==="
+        docker-compose -f docker-compose.infrastructure.yml ps
+        echo "=== Разработка ==="
+        docker-compose -f docker-compose.dev.yml ps
+        ;;
+    *)
+        echo "Использование: $0 {start|stop|restart|infra-stop|logs|status}"
+        echo ""
+        echo "start       - Запуск инфраструктуры и бота"
+        echo "stop        - Остановка только бота"
+        echo "restart     - Перезапуск только бота"
+        echo "infra-stop  - Остановка инфраструктуры"
+        echo "logs        - Просмотр логов бота"
+        echo "status      - Статус всех сервисов"
+        exit 1
+        ;;
+esac
+
+
+========================================
+
+=== README.md ===
+
+##Settings for connect
+Host name/address: db
+Port: 5432
+Maintenance database: nlstore
+Username: {your_username}
+Password: {your_pass}
+
+
+#work with db throw query service:
+#check catalog
+SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false;
+
+#check tables
+SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+
+----
+# Makefile для управления проектом (создать файл Makefile в корне проекта, без расширения со следующим содержимым)
+
+# Запуск инфраструктуры (БД + pgAdmin)
+infra-up:
+	docker-compose -f docker-compose.infrastructure.yml up -d
+
+# Остановка инфраструктуры
+infra-down:
+	docker-compose -f docker-compose.infrastructure.yml down
+
+# Запуск для разработки (только бот)
+dev-up:
+	docker-compose -f docker-compose.dev.yml up --build
+
+# Остановка разработки
+dev-down:
+	docker-compose -f docker-compose.dev.yml down
+
+# Перезапуск только бота
+dev-restart:
+	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml up --build
+
+# Запуск продакшена
+prod-up:
+	docker-compose -f docker-compose.prod.yml up -d
+
+# Логи разработки
+dev-logs:
+	docker-compose -f docker-compose.dev.yml logs -f
+
+# Подключение к БД
+db-connect:
+	docker exec -it $$(docker ps -q -f "name=db") psql -U mawr -d nlstore
+
+# Статус всех сервисов
+status:
+	@echo "=== Инфраструктура ==="
+	docker-compose -f docker-compose.infrastructure.yml ps
+	@echo "=== Разработка ==="
+	docker-compose -f docker-compose.dev.yml ps
+
+.PHONY: infra-up infra-down dev-up dev-down dev-restart prod-up dev-logs db-connect status
+
+----
+Управление
+Команда	Описание
+make infra-up	Запуск БД и pgAdmin
+make dev-up	Запуск бота для разработки
+make dev-restart	Быстрый перезапуск бота
+make dev-logs	Просмотр логов
+make infra-down	Остановка инфраструктуры
+make status	Статус всех сервисов
+
+========================================
+
+=== bot\.env ===
+
+#bot/.env
+BOT_TOKEN=${BOT_TOKEN}
+CHANNEL_ID=${CHANNEL_ID}
+PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+CHECK_INTERVAL=${CHECK_INTERVAL}
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${POSTGRES_DB}
+DB_USER=${POSTGRES_USER}
+DB_PASSWORD=${POSTGRES_PASSWORD}
+
+========================================
+
+=== bot\src\text_utils.py ===
+
+import re
+import html
+
+def clean_telegram_html(text: str) -> str:
+    return re.sub(r"</?think>", "", text)
+
+def convert_markdown_links_to_html(text: str) -> str:
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+
+========================================
+
+=== bot\src\config.py ===
+
+# bot/src/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+
+========================================
+
+=== bot\src\telegram_utils.py ===
+
+import logging
+from aiogram import Bot
+
+logger = logging.getLogger(__name__)
+
+async def send_long_message(bot: Bot, chat_id: int, text: str, parse_mode=None, **kwargs):
+    limit = 4096
+    for i in range(0, len(text), limit):
+        part = text[i:i+limit]
+        await bot.send_message(chat_id, part, parse_mode=parse_mode, **kwargs)
+
+========================================
+
+=== bot\src\bot.py ===
+
+import os
+import asyncio
+import logging
+from perplexity import init_perplexity, ask_perplexity
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
+
+# Исправленные импорты (убраны точки)
+from state_utils import load_state, save_state, load_pinned_message_id, save_pinned_message_id
+from scraper import fetch_products
+from perplexity import ask_perplexity, init_perplexity
+from telegram_utils import send_long_message
+from text_utils import clean_telegram_html, convert_markdown_links_to_html
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "18000"))
+
+
+
+# Инициализация Perplexity API
+if PERPLEXITY_API_KEY:
+    init_perplexity(PERPLEXITY_API_KEY)
+    answer = ask_perplexity("Какая польза у коллагена?")
+    
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.channel_post()
+async def channel_post_handler(message: types.Message):
+    if not PERPLEXITY_API_KEY:
+        await message.reply("Perplexity API ключ не задан.")
+        return
+
+    user_query = message.text
+    if not user_query:
+        return
+
+    try:
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.full_name}</a>' if message.from_user else None
+
+        await message.reply("Запрос отправлен, ожидайте ответа...")
+        logger.info(f"Обработка запроса: {user_query[:50]}...")
+        
+        loop = asyncio.get_event_loop()
+        raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query)
+        
+        cleaned_answer = clean_telegram_html(raw_answer)
+        answer_with_links = convert_markdown_links_to_html(cleaned_answer)
+
+        reply_text = f"{mention}, {answer_with_links}" if mention else answer_with_links
+
+        await send_long_message(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text=answer_with_links,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.info("Ответ успешно отправлен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        await message.reply("Произошла ошибка при обработке вашего запроса.")
+
+async def price_scraping_loop(bot: Bot):
+    await asyncio.sleep(10)
+    logger.info("Запущен цикл отслеживания цен")
+    
+    while True:
+        try:
+            products = fetch_products()
+            old_state = load_state()
+            pinned_message_id = load_pinned_message_id()
+            new_state = {}
+            price_drop_messages = []
+            price_increase_detected = False
+
+            for product in products:
+                try:
+                    product_id = str(product.get('id', ''))
+                    product_name = str(product.get('name', 'Без названия'))
+                    
+                    # Обработка цены
+                    new_price = product.get('price', 0)
+                    if isinstance(new_price, dict):
+                        new_price = new_price.get('current', 0)
+                    new_price = float(new_price)
+                    
+                    # Если товара нет в старом состоянии
+                    if product_id not in old_state:
+                        new_state[product_id] = {
+                            'price': new_price,
+                            'last_notified_price': new_price
+                        }
+                        continue
+                    
+                    # Получаем данные из старого состояния
+                    state_data = old_state.get(product_id, {})
+                    old_price = float(state_data.get('price', new_price))
+                    last_notified = float(state_data.get('last_notified_price', old_price))
+                    
+                    # Сохраняем новое состояние
+                    new_state[product_id] = {
+                        'price': new_price,
+                        'last_notified_price': last_notified
+                    }
+
+                    # Проверяем изменения цены
+                    if new_price < old_price and new_price != last_notified:
+                        msg = f"📉 Цена на '{product_name}' снизилась: {old_price} ₽ → {new_price} ₽"
+                        price_drop_messages.append(msg)
+                        new_state[product_id]['last_notified_price'] = new_price
+                    elif new_price > old_price:
+                        price_increase_detected = True
+                        new_state[product_id]['last_notified_price'] = new_price
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Пропускаем товар: {e}")
+
+            if price_drop_messages:
+                full_message = "🔥 **АКЦИЯ!**\n\n" + "\n".join(price_drop_messages)
+                sent_message = await bot.send_message(CHANNEL_ID, full_message, parse_mode="Markdown")
+                await bot.pin_chat_message(CHANNEL_ID, sent_message.message_id)
+                save_pinned_message_id(sent_message.message_id)
+            elif price_increase_detected and pinned_message_id:
+                await bot.unpin_chat_message(CHANNEL_ID, pinned_message_id)
+                save_pinned_message_id(None)
+
+            save_state(new_state)
+            logger.info(f"Обработано {len(products)} товаров, изменений: {len(price_drop_messages)}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле отслеживания цен: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+        
+@router.message(Command("stats"))
+async def send_stats(message: types.Message):
+    try:
+        stats = "📊 Статистика базы данных:\n"
+        stats += f"• Доступ в pgAdmin: http://localhost:6432\n"
+        stats += f"  Логин: admin@admin.com\n"
+        stats += f"  Пароль: metallica"
+        await message.reply(stats)
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await message.reply("Ошибка получения статистики")
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    asyncio.create_task(price_scraping_loop(bot))
+    logger.info("Бот запущен и слушает канал...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+========================================
+
+=== bot\src\state_utils.py ===
+
+import logging
+from database import Database 
+
+logger = logging.getLogger(__name__)
+
+def load_state():
+    try:
+        db = Database.get_instance()
+        return db.load_state('price_state')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+        return {}
+
+def save_state(state):
+    try:
+        db = Database.get_instance()
+        db.save_state('price_state', state)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_pinned_message_id():
+    try:
+        db = Database.get_instance()
+        state = db.load_state('pinned_message')
+        return state.get('pinned_message_id')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки закрепленного сообщения: {e}")
+        return None
+
+def save_pinned_message_id(message_id):
+    try:
+        db = Database.get_instance()
+        db.save_state('pinned_message', {'pinned_message_id': message_id})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения закрепленного сообщения: {e}")
+
+========================================
+
+=== bot\src\perplexity.py ===
+
+import requests
+import logging
+from typing import List, Dict, Optional
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
+class PerplexityAPI:
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.db = ProductDatabase()
+        self.db.sync_demo_products()
+
+    # Делаем retry: 3 попытки, пауза 3 сек, только если timeout!
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(3),
+        retry=retry_if_exception_type(requests.exceptions.Timeout)
+    )
+    def _ask(self, payload, headers):
+        response = requests.post(
+            self.BASE_URL,
+            json=payload,
+            headers=headers,
+            timeout=12  # уменьшили до 12 секунд!
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def ask(self, query: str) -> str:
+        try:
+            relevant = self.db.search_products(query)
+            product_context = ""
+            if relevant:
+                product_context = "\n\n### Информация о продуктах:\n"
+                for prod in relevant:
+                    product_context += (
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
+                    )
+            system_prompt = (
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
+                f"{product_context}"
+            )
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Используй Markdown для ссылок\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com)\n"
+                "- Для медицинских советов добавляй предупреждение\n\n"
+                f'Вопрос: "{query}"'
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.3,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            # Используем защищённый вызов с повтором
+            resp_json = self._ask(payload, headers)
+            return resp_json["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            logger.error("Timeout при обращении к Perplexity API.")
+            return "Сервер перегружен, не удалось получить ответ за разумное время. Попробуйте повторить позже."
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
+
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
+
+def init_perplexity(api_key: str):
+    global perplexity_api
+    perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
+
+
+========================================
+
+=== bot\src\scraper.py ===
+
+import requests
+import logging
+from database import Database
+
+logger = logging.getLogger(__name__)
+
+def fetch_products():
+    try:
+        url = "https://ng.nlstar.com/ru/api/store/city/2214/all-products/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        logger.info(f"Запрос данных с {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        products = data.get("products", [])
+        logger.info(f"Получено {len(products)} товаров")
+        
+        # Нормализация данных
+        normalized = []
+        for p in products:
+            try:
+                # Обработка цены
+                price = p.get('price', 0)
+                if isinstance(price, dict):
+                    # Если цена приходит в виде словаря, берем основное значение
+                    price = price.get('current', 0)
+                if isinstance(price, str):
+                    price = price.replace(' ', '').replace(',', '.')
+                
+                # Преобразуем в float
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = 0.0
+                
+                normalized.append({
+                    'id': str(p.get('id', '')),
+                    'name': str(p.get('name') or p.get('short_name') or "Без названия"),
+                    'short_name': str(p.get('short_name', '')),
+                    'price': price,
+                    'category': str(p.get('category', ''))})
+            except Exception as e:
+                logger.error(f"Ошибка обработки товара: {e}")
+        
+        # Сохраняем в БД
+        db = Database.get_instance()
+        saved = db.save_products(normalized)
+        logger.info(f"Сохранено {saved} товаров в БД")
+        
+        return normalized
+    except Exception as e:
+        logger.error(f"Ошибка получения продуктов: {e}")
+        return []
+
+========================================
+
+=== bot\src\database.py ===
+
+import psycopg2
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=10, delay=2):
+        """Подключение к базе данных с улучшенной логикой повторных попыток"""
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "localhost"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica"),
+                    connect_timeout=10
+                )
+                self.conn.autocommit = True
+                logger.info(f"Успешное подключение к PostgreSQL на {os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}")
+                return
+            except psycopg2.OperationalError as e:
+                logger.warning(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+                else:
+                    logger.error("Не удалось подключиться к PostgreSQL после всех попыток")
+                    raise
+            except Exception as e:
+                logger.error(f"Неожиданная ошибка подключения к БД: {e}")
+                raise
+    
+    def reconnect(self):
+        """Переподключение к базе данных"""
+        if self.conn:
+            try:
+                self.conn.close()
+            except:
+                pass
+        self.connect()
+    
+    def execute_with_retry(self, query, params=None, retries=3):
+        """Выполнение запроса с повторными попытками при потере соединения"""
+        for i in range(retries):
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    return cursor.fetchall() if cursor.description else None
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"Потеря соединения с БД, попытка переподключения ({i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    try:
+                        self.reconnect()
+                    except Exception as reconnect_error:
+                        logger.error(f"Ошибка переподключения: {reconnect_error}")
+                        time.sleep(2)
+                else:
+                    logger.error("Не удалось восстановить соединение с БД")
+                    raise
+    
+    def create_tables(self):
+        if not self.conn:
+            logger.error("Нет подключения к БД для создания таблиц")
+            return
+            
+        try:
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id VARCHAR(50) PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    short_name TEXT,
+                    price FLOAT NOT NULL,
+                    category TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id SERIAL PRIMARY KEY,
+                    product_id VARCHAR(50) NOT NULL,
+                    price FLOAT NOT NULL,
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            self.execute_with_retry("""
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    key VARCHAR(50) PRIMARY KEY,
+                    value JSONB NOT NULL
+                )
+            """)
+            
+            logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+    
+    def save_products(self, products):
+        if not self.conn or not products:
+            return 0
+            
+        saved_count = 0
+        try:
+            for product in products:
+                try:
+                    # Проверяем и преобразуем данные
+                    product_id = str(product.get('id', ''))
+                    name = str(product.get('name', ''))
+                    short_name = str(product.get('short_name', ''))
+                    price = float(product.get('price', 0))
+                    category = str(product.get('category', ''))
+                    
+                    self.execute_with_retry("""
+                        INSERT INTO products (id, name, short_name, price, category)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            short_name = EXCLUDED.short_name,
+                            price = EXCLUDED.price,
+                            category = EXCLUDED.category,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (product_id, name, short_name, price, category))
+                    
+                    self.execute_with_retry("""
+                        INSERT INTO price_history (product_id, price)
+                        VALUES (%s, %s)
+                    """, (product_id, price))
+                    
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"Общая ошибка при сохранении товаров: {e}")
+        
+        return saved_count
+    
+    def save_state(self, key, state):
+        if not self.conn:
+            return
+            
+        try:
+            self.execute_with_retry("""
+                INSERT INTO bot_state (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value
+            """, (key, json.dumps(state)))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
+    
+    def load_state(self, key):
+        if not self.conn:
+            return {}
+            
+        try:
+            result = self.execute_with_retry("SELECT value FROM bot_state WHERE key = %s", (key,))
+            return json.loads(result[0][0]) if result else {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки состояния: {e}")
+            return {}
+
+
+========================================
+
+=== bot\src\postgres_db.py ===
+
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class PostgresDB:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PostgresDB, cls).__new__(cls)
+            cls._instance._init_db()
+        return cls._instance
+    
+    def _init_db(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL после нескольких попыток")
+    
+    def create_tables(self):
+        try:
+            with self.conn.cursor() as cursor:
+                # Таблица продуктов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица истории цен
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица состояния
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+
+    def save_products(self, products):
+        if not products:
+            logger.warning("Нет продуктов для сохранения")
+            return
+        
+        logger.info(f"Сохранение {len(products)} товаров в БД...")
+        saved_count = 0
+        
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Сохраняем продукт
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (
+                            product['id'],
+                            product.get('name', ''),
+                            product.get('short_name', ''),
+                            product['price'],
+                            product.get('category', '')
+                        ))
+                        
+                        # Сохраняем в историю цен
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (
+                            product['id'],
+                            product['price']
+                        ))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+            
+            logger.info(f"Успешно сохранено {saved_count} товаров")
+            return saved_count
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении товаров: {e}")
+            return 0
+
+========================================
+
+=== bot\Dockerfile ===
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src
+
+# Явно указываем рабочую директорию для src
+WORKDIR /app/src
+
+CMD ["python", "-u", "bot.py"]
+
+========================================
+
+=== bot\requirements.txt ===
+
+aiogram==3.4.1
+python-dotenv==1.0.1
+requests==2.32.0
+beautifulsoup4==4.12.3
+psycopg2-binary==2.9.9
+tenacity
+
+
+========================================
+
+=== .env ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+DB_HOST=db
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== pgadmin\setup.sh ===
+
+#!/bin/bash
+
+# Ожидаем запуск pgAdmin
+while ! curl -s http://localhost:80 > /dev/null; do
+  echo "Ожидание запуска pgAdmin..."
+  sleep 5
+done
+
+# Добавляем сервер
+curl -v -X POST "http://localhost:80/browser/server/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "NL Store DB",
+    "host": "db",
+    "port": 5432,
+    "username": "'"$POSTGRES_USER"'",
+    "password": "'"$POSTGRES_PASSWORD"'",
+    "db": "'"$POSTGRES_DB"'",
+    "sslmode": "prefer"
+  }'
+
+echo "Сервер NL Store DB успешно добавлен в pgAdmin"
+
+========================================
+
+=== docker-compose.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src  # Рабочая директория теперь в src
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ./.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+========================================
+
+=== docker-compose.dev.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src
+    environment:
+      - DB_HOST=localhost
+    network_mode: "host"
+    restart: unless-stopped
+    depends_on: []
+
+
+========================================
+
+=== .gitignore ===
+
+# Data files
+*.json
+*.db
+*.csv
+.*
+
+# Environment
+.env
+venv/
+bot/.env
+
+# Docker
+data/
+
+========================================
+
+=== .env.dev ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+
+# Database settings for development (localhost)
+DB_HOST=localhost
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== Makefile ===
+
+# Makefile для управления проектом
+
+# Запуск инфраструктуры (БД + pgAdmin)
+infra-up:
+	docker-compose -f docker-compose.infrastructure.yml up -d
+
+# Остановка инфраструктуры
+infra-down:
+	docker-compose -f docker-compose.infrastructure.yml down -v
+
+# Запуск для разработки (только бот)
+dev-up:
+	docker-compose -f docker-compose.dev.yml up --build -d
+
+# Остановка разработки
+dev-down:
+	docker-compose -f docker-compose.dev.yml down
+
+# Перезапуск только бота
+dev-restart:
+	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml up --build -d
+
+# Запуск продакшена
+prod-up:
+	docker-compose -f docker-compose.prod.yml up -d
+
+# Логи разработки
+dev-logs:
+	docker-compose -f docker-compose.dev.yml logs -f
+
+# Подключение к БД
+db-connect:
+	docker exec -it $$(docker ps -q -f "name=db") psql -U mawr -d nlstore
+
+# Статус всех сервисов
+status:
+	@echo "=== Инфраструктура ==="
+	docker-compose -f docker-compose.infrastructure.yml ps
+	@echo "=== Разработка ==="
+	docker-compose -f docker-compose.dev.yml ps
+
+.PHONY: infra-up infra-down dev-up dev-down dev-restart prod-up dev-logs db-connect status
+
+
+========================================
+
+=== project-export.txt ===
+
+PROJECT EXPORT
+
+PROJECT STRUCTURE:
+
+📁 bot
+  📁 src
+    📄 bot.py
+    📄 config.py
+    📄 database.py
+    📄 perplexity.py
+    📄 postgres_db.py
+    📄 scraper.py
+    📄 state_utils.py
+    📄 telegram_utils.py
+    📄 text_utils.py
+  📄 .env
+  📄 Dockerfile
+  📄 requirements.txt
+📁 data
+📁 logs
+📁 pgadmin
+  📄 setup.sh
+📄 .env
+📄 .gitignore
+📄 docker-compose.yml
+📄 project-export.txt
+📄 README.md
+
+FILES:
+
+=== README.md ===
+
+##Settings for connect
+Host name/address: db
+Port: 5432
+Maintenance database: nlstore
+Username: {your_username}
+Password: {your_pass}
+
+
+#work with db throw query service:
+#check catalog
+SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false;
+
+#check tables
+SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+
+
+
+
+========================================
+
+=== bot\.env ===
+
+#bot/.env
+BOT_TOKEN=${BOT_TOKEN}
+CHANNEL_ID=${CHANNEL_ID}
+PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+CHECK_INTERVAL=${CHECK_INTERVAL}
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${POSTGRES_DB}
+DB_USER=${POSTGRES_USER}
+DB_PASSWORD=${POSTGRES_PASSWORD}
+
+========================================
+
+=== bot\src\text_utils.py ===
+
+import re
+import html
+
+def clean_telegram_html(text: str) -> str:
+    return re.sub(r"</?think>", "", text)
+
+def convert_markdown_links_to_html(text: str) -> str:
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+
+========================================
+
+=== bot\src\config.py ===
+
+# bot/src/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+
+========================================
+
+=== bot\src\telegram_utils.py ===
+
+import logging
+from aiogram import Bot
+
+logger = logging.getLogger(__name__)
+
+async def send_long_message(bot: Bot, chat_id: int, text: str, parse_mode=None, **kwargs):
+    limit = 4096
+    for i in range(0, len(text), limit):
+        part = text[i:i+limit]
+        await bot.send_message(chat_id, part, parse_mode=parse_mode, **kwargs)
+
+========================================
+
+=== bot\src\bot.py ===
+
+import os
+import asyncio
+import logging
+from perplexity import init_perplexity, ask_perplexity
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
+
+# Исправленные импорты (убраны точки)
+from state_utils import load_state, save_state, load_pinned_message_id, save_pinned_message_id
+from scraper import fetch_products
+from perplexity import ask_perplexity, init_perplexity
+from telegram_utils import send_long_message
+from text_utils import clean_telegram_html, convert_markdown_links_to_html
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "18000"))
+
+
+
+# Инициализация Perplexity API
+if PERPLEXITY_API_KEY:
+    init_perplexity(PERPLEXITY_API_KEY)
+    answer = ask_perplexity("Какая польза у коллагена?")
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.channel_post()
+async def channel_post_handler(message: types.Message):
+    if not PERPLEXITY_API_KEY:
+        await message.reply("Perplexity API ключ не задан.")
+        return
+
+    user_query = message.text
+    if not user_query:
+        return
+
+    try:
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.full_name}</a>' if message.from_user else None
+
+        await message.reply("Запрос отправлен, ожидайте ответа...")
+        logger.info(f"Обработка запроса: {user_query[:50]}...")
+        
+        loop = asyncio.get_event_loop()
+        raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query)
+        
+        cleaned_answer = clean_telegram_html(raw_answer)
+        answer_with_links = convert_markdown_links_to_html(cleaned_answer)
+
+        reply_text = f"{mention}, {answer_with_links}" if mention else answer_with_links
+
+        await send_long_message(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text=reply_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.info("Ответ успешно отправлен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        await message.reply("Произошла ошибка при обработке вашего запроса.")
+
+async def price_scraping_loop(bot: Bot):
+    await asyncio.sleep(10)
+    logger.info("Запущен цикл отслеживания цен")
+    
+    while True:
+        try:
+            products = fetch_products()
+            old_state = load_state()
+            pinned_message_id = load_pinned_message_id()
+            new_state = {}
+            price_drop_messages = []
+            price_increase_detected = False
+
+            for product in products:
+                try:
+                    product_id = str(product.get('id', ''))
+                    product_name = str(product.get('name', 'Без названия'))
+                    
+                    # Обработка цены
+                    new_price = product.get('price', 0)
+                    if isinstance(new_price, dict):
+                        new_price = new_price.get('current', 0)
+                    new_price = float(new_price)
+                    
+                    # Если товара нет в старом состоянии
+                    if product_id not in old_state:
+                        new_state[product_id] = {
+                            'price': new_price,
+                            'last_notified_price': new_price
+                        }
+                        continue
+                    
+                    # Получаем данные из старого состояния
+                    state_data = old_state.get(product_id, {})
+                    old_price = float(state_data.get('price', new_price))
+                    last_notified = float(state_data.get('last_notified_price', old_price))
+                    
+                    # Сохраняем новое состояние
+                    new_state[product_id] = {
+                        'price': new_price,
+                        'last_notified_price': last_notified
+                    }
+
+                    # Проверяем изменения цены
+                    if new_price < old_price and new_price != last_notified:
+                        msg = f"📉 Цена на '{product_name}' снизилась: {old_price} ₽ → {new_price} ₽"
+                        price_drop_messages.append(msg)
+                        new_state[product_id]['last_notified_price'] = new_price
+                    elif new_price > old_price:
+                        price_increase_detected = True
+                        new_state[product_id]['last_notified_price'] = new_price
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Пропускаем товар: {e}")
+
+            if price_drop_messages:
+                full_message = "🔥 **АКЦИЯ!**\n\n" + "\n".join(price_drop_messages)
+                sent_message = await bot.send_message(CHANNEL_ID, full_message, parse_mode="Markdown")
+                await bot.pin_chat_message(CHANNEL_ID, sent_message.message_id)
+                save_pinned_message_id(sent_message.message_id)
+            elif price_increase_detected and pinned_message_id:
+                await bot.unpin_chat_message(CHANNEL_ID, pinned_message_id)
+                save_pinned_message_id(None)
+
+            save_state(new_state)
+            logger.info(f"Обработано {len(products)} товаров, изменений: {len(price_drop_messages)}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле отслеживания цен: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+        
+@router.message(Command("stats"))
+async def send_stats(message: types.Message):
+    try:
+        stats = "📊 Статистика базы данных:\n"
+        stats += f"• Доступ в pgAdmin: http://localhost:6432\n"
+        stats += f"  Логин: admin@admin.com\n"
+        stats += f"  Пароль: metallica"
+        await message.reply(stats)
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await message.reply("Ошибка получения статистики")
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    asyncio.create_task(price_scraping_loop(bot))
+    logger.info("Бот запущен и слушает канал...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+========================================
+
+=== bot\src\state_utils.py ===
+
+import logging
+from database import Database 
+
+logger = logging.getLogger(__name__)
+
+def load_state():
+    try:
+        db = Database.get_instance()
+        return db.load_state('price_state')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+        return {}
+
+def save_state(state):
+    try:
+        db = Database.get_instance()
+        db.save_state('price_state', state)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_pinned_message_id():
+    try:
+        db = Database.get_instance()
+        state = db.load_state('pinned_message')
+        return state.get('pinned_message_id')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки закрепленного сообщения: {e}")
+        return None
+
+def save_pinned_message_id(message_id):
+    try:
+        db = Database.get_instance()
+        db.save_state('pinned_message', {'pinned_message_id': message_id})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения закрепленного сообщения: {e}")
+
+========================================
+
+=== bot\src\perplexity.py ===
+
+import requests
+import logging
+from typing import List, Dict, Optional
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
+class PerplexityAPI:
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.db = ProductDatabase()
+        self.db.sync_demo_products()  # Загружаем демо-товары
+    
+    def ask(self, query: str) -> str:
+        try:
+            relevant = self.db.search_products(query)
+            product_context = ""
+            if relevant:
+                product_context = "\n\n### Информация о продуктах:\n"
+                for prod in relevant:
+                    product_context += (
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
+                    )
+            # Формируем “инструкции” для ИИ
+            system_prompt = (
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
+                f"{product_context}"
+            )
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Используй Markdown для ссылок\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com)\n"
+                "- Для медицинских советов добавляй предупреждение\n\n"
+                f'Вопрос: "{query}"'
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.3,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.post(
+                self.BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            resp_json = response.json()
+            return resp_json["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
+
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
+
+def init_perplexity(api_key: str):
+    global perplexity_api
+    perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
+
+
+========================================
+
+=== bot\src\scraper.py ===
+
+import requests
+import logging
+from database import Database
+
+logger = logging.getLogger(__name__)
+
+def fetch_products():
+    try:
+        url = "https://ng.nlstar.com/ru/api/store/city/2214/all-products/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        logger.info(f"Запрос данных с {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        products = data.get("products", [])
+        logger.info(f"Получено {len(products)} товаров")
+        
+        # Нормализация данных
+        normalized = []
+        for p in products:
+            try:
+                # Обработка цены
+                price = p.get('price', 0)
+                if isinstance(price, dict):
+                    # Если цена приходит в виде словаря, берем основное значение
+                    price = price.get('current', 0)
+                if isinstance(price, str):
+                    price = price.replace(' ', '').replace(',', '.')
+                
+                # Преобразуем в float
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = 0.0
+                
+                normalized.append({
+                    'id': str(p.get('id', '')),
+                    'name': str(p.get('name') or p.get('short_name') or "Без названия"),
+                    'short_name': str(p.get('short_name', '')),
+                    'price': price,
+                    'category': str(p.get('category', ''))})
+            except Exception as e:
+                logger.error(f"Ошибка обработки товара: {e}")
+        
+        # Сохраняем в БД
+        db = Database.get_instance()
+        saved = db.save_products(normalized)
+        logger.info(f"Сохранено {saved} товаров в БД")
+        
+        return normalized
+    except Exception as e:
+        logger.error(f"Ошибка получения продуктов: {e}")
+        return []
+
+========================================
+
+=== bot\src\database.py ===
+
+import psycopg2
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL")
+    
+    def create_tables(self):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+    
+    def save_products(self, products):
+        if not self.conn or not products:
+            return 0
+            
+        saved_count = 0
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Проверяем и преобразуем данные
+                        product_id = str(product.get('id', ''))
+                        name = str(product.get('name', ''))
+                        short_name = str(product.get('short_name', ''))
+                        price = float(product.get('price', 0))
+                        category = str(product.get('category', ''))
+                        
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (product_id, name, short_name, price, category))
+                        
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (product_id, price))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"Общая ошибка при сохранении товаров: {e}")
+        
+        return saved_count
+    
+    def save_state(self, key, state):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO bot_state (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value
+                """, (key, json.dumps(state)))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
+    
+    def load_state(self, key):
+        if not self.conn:
+            return {}
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("SELECT value FROM bot_state WHERE key = %s", (key,))
+                result = cursor.fetchone()
+                return json.loads(result[0]) if result else {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки состояния: {e}")
+            return {}
+
+========================================
+
+=== bot\src\postgres_db.py ===
+
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class PostgresDB:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PostgresDB, cls).__new__(cls)
+            cls._instance._init_db()
+        return cls._instance
+    
+    def _init_db(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL после нескольких попыток")
+    
+    def create_tables(self):
+        try:
+            with self.conn.cursor() as cursor:
+                # Таблица продуктов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица истории цен
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица состояния
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+
+    def save_products(self, products):
+        if not products:
+            logger.warning("Нет продуктов для сохранения")
+            return
+        
+        logger.info(f"Сохранение {len(products)} товаров в БД...")
+        saved_count = 0
+        
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Сохраняем продукт
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (
+                            product['id'],
+                            product.get('name', ''),
+                            product.get('short_name', ''),
+                            product['price'],
+                            product.get('category', '')
+                        ))
+                        
+                        # Сохраняем в историю цен
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (
+                            product['id'],
+                            product['price']
+                        ))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+            
+            logger.info(f"Успешно сохранено {saved_count} товаров")
+            return saved_count
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении товаров: {e}")
+            return 0
+
+========================================
+
+=== bot\Dockerfile ===
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src
+
+# Явно указываем рабочую директорию для src
+WORKDIR /app/src
+
+CMD ["python", "-u", "bot.py"]
+
+========================================
+
+=== bot\requirements.txt ===
+
+aiogram==3.4.1
+python-dotenv==1.0.1
+requests==2.32.0
+beautifulsoup4==4.12.3
+psycopg2-binary==2.9.9
+
+========================================
+
+=== .env ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+DB_HOST=db
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== pgadmin\setup.sh ===
+
+#!/bin/bash
+
+# Ожидаем запуск pgAdmin
+while ! curl -s http://localhost:80 > /dev/null; do
+  echo "Ожидание запуска pgAdmin..."
+  sleep 5
+done
+
+# Добавляем сервер
+curl -v -X POST "http://localhost:80/browser/server/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "NL Store DB",
+    "host": "db",
+    "port": 5432,
+    "username": "'"$POSTGRES_USER"'",
+    "password": "'"$POSTGRES_PASSWORD"'",
+    "db": "'"$POSTGRES_DB"'",
+    "sslmode": "prefer"
+  }'
+
+echo "Сервер NL Store DB успешно добавлен в pgAdmin"
+
+========================================
+
+=== docker-compose.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src  # Рабочая директория теперь в src
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ./.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+========================================
+
+=== .gitignore ===
+
+# Data files
+*.json
+*.db
+*.csv
+.*
+
+# Environment
+.env
+venv/
+bot/.env
+
+# Docker
+data/
+
+========================================
+
+=== project-export.txt ===
+
+PROJECT EXPORT
+
+PROJECT STRUCTURE:
+
+📁 bot
+  📁 src
+    📄 bot.py
+    📄 config.py
+    📄 database.py
+    📄 perplexity.py
+    📄 postgres_db.py
+    📄 scraper.py
+    📄 state_utils.py
+    📄 telegram_utils.py
+    📄 text_utils.py
+  📄 .env
+  📄 Dockerfile
+  📄 requirements.txt
+📁 data
+📁 logs
+📁 pgadmin
+  📄 setup.sh
+📄 .env
+📄 .gitignore
+📄 docker-compose.yml
+📄 project-export.txt
+📄 README.md
+
+FILES:
+
+=== README.md ===
+
+##Settings for connect
+Host name/address: db
+Port: 5432
+Maintenance database: nlstore
+Username: {your_username}
+Password: {your_pass}
+
+
+#work with db throw query service:
+#check catalog
+SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false;
+
+#check tables
+SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+
+
+
+
+========================================
+
+=== bot\.env ===
+
+#bot/.env
+BOT_TOKEN=${BOT_TOKEN}
+CHANNEL_ID=${CHANNEL_ID}
+PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+CHECK_INTERVAL=${CHECK_INTERVAL}
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${POSTGRES_DB}
+DB_USER=${POSTGRES_USER}
+DB_PASSWORD=${POSTGRES_PASSWORD}
+
+========================================
+
+=== bot\src\text_utils.py ===
+
+import re
+import html
+
+def clean_telegram_html(text: str) -> str:
+    return re.sub(r"</?think>", "", text)
+
+def convert_markdown_links_to_html(text: str) -> str:
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+
+========================================
+
+=== bot\src\config.py ===
+
+# bot/src/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+
+========================================
+
+=== bot\src\telegram_utils.py ===
+
+import logging
+from aiogram import Bot
+
+logger = logging.getLogger(__name__)
+
+async def send_long_message(bot: Bot, chat_id: int, text: str, parse_mode=None, **kwargs):
+    limit = 4096
+    for i in range(0, len(text), limit):
+        part = text[i:i+limit]
+        await bot.send_message(chat_id, part, parse_mode=parse_mode, **kwargs)
+
+========================================
+
+=== bot\src\bot.py ===
+
+import os
+import asyncio
+import logging
+from perplexity_ai import init_perplexity, ask_perplexity
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
+
+# Исправленные импорты (убраны точки)
+from state_utils import load_state, save_state, load_pinned_message_id, save_pinned_message_id
+from scraper import fetch_products
+from perplexity import ask_perplexity, init_perplexity
+from telegram_utils import send_long_message
+from text_utils import clean_telegram_html, convert_markdown_links_to_html
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "18000"))
+
+
+
+# Инициализация Perplexity API
+if PERPLEXITY_API_KEY:
+    init_perplexity(PERPLEXITY_API_KEY)
+    answer = ask_perplexity("Какая польза у коллагена?")
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.channel_post()
+async def channel_post_handler(message: types.Message):
+    if not PERPLEXITY_API_KEY:
+        await message.reply("Perplexity API ключ не задан.")
+        return
+
+    user_query = message.text
+    if not user_query:
+        return
+
+    try:
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.full_name}</a>' if message.from_user else None
+
+        await message.reply("Запрос отправлен, ожидайте ответа...")
+        logger.info(f"Обработка запроса: {user_query[:50]}...")
+        
+        loop = asyncio.get_event_loop()
+        raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query)
+        
+        cleaned_answer = clean_telegram_html(raw_answer)
+        answer_with_links = convert_markdown_links_to_html(cleaned_answer)
+
+        reply_text = f"{mention}, {answer_with_links}" if mention else answer_with_links
+
+        await send_long_message(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text=reply_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.info("Ответ успешно отправлен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        await message.reply("Произошла ошибка при обработке вашего запроса.")
+
+async def price_scraping_loop(bot: Bot):
+    await asyncio.sleep(10)
+    logger.info("Запущен цикл отслеживания цен")
+    
+    while True:
+        try:
+            products = fetch_products()
+            old_state = load_state()
+            pinned_message_id = load_pinned_message_id()
+            new_state = {}
+            price_drop_messages = []
+            price_increase_detected = False
+
+            for product in products:
+                try:
+                    product_id = str(product.get('id', ''))
+                    product_name = str(product.get('name', 'Без названия'))
+                    
+                    # Обработка цены
+                    new_price = product.get('price', 0)
+                    if isinstance(new_price, dict):
+                        new_price = new_price.get('current', 0)
+                    new_price = float(new_price)
+                    
+                    # Если товара нет в старом состоянии
+                    if product_id not in old_state:
+                        new_state[product_id] = {
+                            'price': new_price,
+                            'last_notified_price': new_price
+                        }
+                        continue
+                    
+                    # Получаем данные из старого состояния
+                    state_data = old_state.get(product_id, {})
+                    old_price = float(state_data.get('price', new_price))
+                    last_notified = float(state_data.get('last_notified_price', old_price))
+                    
+                    # Сохраняем новое состояние
+                    new_state[product_id] = {
+                        'price': new_price,
+                        'last_notified_price': last_notified
+                    }
+
+                    # Проверяем изменения цены
+                    if new_price < old_price and new_price != last_notified:
+                        msg = f"📉 Цена на '{product_name}' снизилась: {old_price} ₽ → {new_price} ₽"
+                        price_drop_messages.append(msg)
+                        new_state[product_id]['last_notified_price'] = new_price
+                    elif new_price > old_price:
+                        price_increase_detected = True
+                        new_state[product_id]['last_notified_price'] = new_price
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Пропускаем товар: {e}")
+
+            if price_drop_messages:
+                full_message = "🔥 **АКЦИЯ!**\n\n" + "\n".join(price_drop_messages)
+                sent_message = await bot.send_message(CHANNEL_ID, full_message, parse_mode="Markdown")
+                await bot.pin_chat_message(CHANNEL_ID, sent_message.message_id)
+                save_pinned_message_id(sent_message.message_id)
+            elif price_increase_detected and pinned_message_id:
+                await bot.unpin_chat_message(CHANNEL_ID, pinned_message_id)
+                save_pinned_message_id(None)
+
+            save_state(new_state)
+            logger.info(f"Обработано {len(products)} товаров, изменений: {len(price_drop_messages)}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле отслеживания цен: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+        
+@router.message(Command("stats"))
+async def send_stats(message: types.Message):
+    try:
+        stats = "📊 Статистика базы данных:\n"
+        stats += f"• Доступ в pgAdmin: http://localhost:6432\n"
+        stats += f"  Логин: admin@admin.com\n"
+        stats += f"  Пароль: metallica"
+        await message.reply(stats)
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await message.reply("Ошибка получения статистики")
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    asyncio.create_task(price_scraping_loop(bot))
+    logger.info("Бот запущен и слушает канал...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+========================================
+
+=== bot\src\state_utils.py ===
+
+import logging
+from database import Database 
+
+logger = logging.getLogger(__name__)
+
+def load_state():
+    try:
+        db = Database.get_instance()
+        return db.load_state('price_state')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+        return {}
+
+def save_state(state):
+    try:
+        db = Database.get_instance()
+        db.save_state('price_state', state)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_pinned_message_id():
+    try:
+        db = Database.get_instance()
+        state = db.load_state('pinned_message')
+        return state.get('pinned_message_id')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки закрепленного сообщения: {e}")
+        return None
+
+def save_pinned_message_id(message_id):
+    try:
+        db = Database.get_instance()
+        db.save_state('pinned_message', {'pinned_message_id': message_id})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения закрепленного сообщения: {e}")
+
+========================================
+
+=== bot\src\perplexity.py ===
+
+import requests
+import logging
+from typing import List, Dict, Optional
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
+class PerplexityAPI:
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.db = ProductDatabase()
+        self.db.sync_demo_products()  # Загружаем демо-товары
+    
+    def ask(self, query: str) -> str:
+        try:
+            relevant = self.db.search_products(query)
+            product_context = ""
+            if relevant:
+                product_context = "\n\n### Информация о продуктах:\n"
+                for prod in relevant:
+                    product_context += (
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
+                    )
+            # Формируем “инструкции” для ИИ
+            system_prompt = (
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
+                f"{product_context}"
+            )
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Используй Markdown для ссылок\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com)\n"
+                "- Для медицинских советов добавляй предупреждение\n\n"
+                f'Вопрос: "{query}"'
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.3,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.post(
+                self.BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            resp_json = response.json()
+            return resp_json["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
+
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
+
+def init_perplexity(api_key: str):
+    global perplexity_api
+    perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
+
+
+========================================
+
+=== bot\src\scraper.py ===
+
+import requests
+import logging
+from database import Database
+
+logger = logging.getLogger(__name__)
+
+def fetch_products():
+    try:
+        url = "https://ng.nlstar.com/ru/api/store/city/2214/all-products/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        logger.info(f"Запрос данных с {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        products = data.get("products", [])
+        logger.info(f"Получено {len(products)} товаров")
+        
+        # Нормализация данных
+        normalized = []
+        for p in products:
+            try:
+                # Обработка цены
+                price = p.get('price', 0)
+                if isinstance(price, dict):
+                    # Если цена приходит в виде словаря, берем основное значение
+                    price = price.get('current', 0)
+                if isinstance(price, str):
+                    price = price.replace(' ', '').replace(',', '.')
+                
+                # Преобразуем в float
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = 0.0
+                
+                normalized.append({
+                    'id': str(p.get('id', '')),
+                    'name': str(p.get('name') or p.get('short_name') or "Без названия"),
+                    'short_name': str(p.get('short_name', '')),
+                    'price': price,
+                    'category': str(p.get('category', ''))})
+            except Exception as e:
+                logger.error(f"Ошибка обработки товара: {e}")
+        
+        # Сохраняем в БД
+        db = Database.get_instance()
+        saved = db.save_products(normalized)
+        logger.info(f"Сохранено {saved} товаров в БД")
+        
+        return normalized
+    except Exception as e:
+        logger.error(f"Ошибка получения продуктов: {e}")
+        return []
+
+========================================
+
+=== bot\src\database.py ===
+
+import psycopg2
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL")
+    
+    def create_tables(self):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+    
+    def save_products(self, products):
+        if not self.conn or not products:
+            return 0
+            
+        saved_count = 0
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Проверяем и преобразуем данные
+                        product_id = str(product.get('id', ''))
+                        name = str(product.get('name', ''))
+                        short_name = str(product.get('short_name', ''))
+                        price = float(product.get('price', 0))
+                        category = str(product.get('category', ''))
+                        
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (product_id, name, short_name, price, category))
+                        
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (product_id, price))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"Общая ошибка при сохранении товаров: {e}")
+        
+        return saved_count
+    
+    def save_state(self, key, state):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO bot_state (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value
+                """, (key, json.dumps(state)))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
+    
+    def load_state(self, key):
+        if not self.conn:
+            return {}
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("SELECT value FROM bot_state WHERE key = %s", (key,))
+                result = cursor.fetchone()
+                return json.loads(result[0]) if result else {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки состояния: {e}")
+            return {}
+
+========================================
+
+=== bot\src\postgres_db.py ===
+
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class PostgresDB:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PostgresDB, cls).__new__(cls)
+            cls._instance._init_db()
+        return cls._instance
+    
+    def _init_db(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL после нескольких попыток")
+    
+    def create_tables(self):
+        try:
+            with self.conn.cursor() as cursor:
+                # Таблица продуктов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица истории цен
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица состояния
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+
+    def save_products(self, products):
+        if not products:
+            logger.warning("Нет продуктов для сохранения")
+            return
+        
+        logger.info(f"Сохранение {len(products)} товаров в БД...")
+        saved_count = 0
+        
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Сохраняем продукт
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (
+                            product['id'],
+                            product.get('name', ''),
+                            product.get('short_name', ''),
+                            product['price'],
+                            product.get('category', '')
+                        ))
+                        
+                        # Сохраняем в историю цен
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (
+                            product['id'],
+                            product['price']
+                        ))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+            
+            logger.info(f"Успешно сохранено {saved_count} товаров")
+            return saved_count
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении товаров: {e}")
+            return 0
+
+========================================
+
+=== bot\Dockerfile ===
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src
+
+# Явно указываем рабочую директорию для src
+WORKDIR /app/src
+
+CMD ["python", "-u", "bot.py"]
+
+========================================
+
+=== bot\requirements.txt ===
+
+aiogram==3.4.1
+python-dotenv==1.0.1
+requests==2.32.0
+beautifulsoup4==4.12.3
+psycopg2-binary==2.9.9
+
+========================================
+
+=== .env ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+DB_HOST=db
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== pgadmin\setup.sh ===
+
+#!/bin/bash
+
+# Ожидаем запуск pgAdmin
+while ! curl -s http://localhost:80 > /dev/null; do
+  echo "Ожидание запуска pgAdmin..."
+  sleep 5
+done
+
+# Добавляем сервер
+curl -v -X POST "http://localhost:80/browser/server/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "NL Store DB",
+    "host": "db",
+    "port": 5432,
+    "username": "'"$POSTGRES_USER"'",
+    "password": "'"$POSTGRES_PASSWORD"'",
+    "db": "'"$POSTGRES_DB"'",
+    "sslmode": "prefer"
+  }'
+
+echo "Сервер NL Store DB успешно добавлен в pgAdmin"
+
+========================================
+
+=== docker-compose.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src  # Рабочая директория теперь в src
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ./.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+========================================
+
+=== .gitignore ===
+
+# Data files
+*.json
+*.db
+*.csv
+.*
+
+# Environment
+.env
+venv/
+bot/.env
+
+# Docker
+data/
+
+========================================
+
+=== project-export.txt ===
+
+PROJECT EXPORT
+
+PROJECT STRUCTURE:
+
+📁 bot
+  📁 src
+    📄 bot.py
+    📄 config.py
+    📄 database.py
+    📄 perplexity.py
+    📄 postgres_db.py
+    📄 scraper.py
+    📄 state_utils.py
+    📄 telegram_utils.py
+    📄 text_utils.py
+  📄 .env
+  📄 Dockerfile
+  📄 requirements.txt
+📁 data
+📁 logs
+📁 pgadmin
+  📄 setup.sh
+📄 .env
+📄 .gitignore
+📄 docker-compose.yml
+📄 README.md
+
+FILES:
+
+=== README.md ===
+
+##Settings for connect
+Host name/address: db
+Port: 5432
+Maintenance database: nlstore
+Username: {your_username}
+Password: {your_pass}
+
+
+#work with db throw query service:
+#check catalog
+SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false;
+
+#check tables
+SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+
+
+
+
+========================================
+
+=== bot\.env ===
+
+#bot/.env
+BOT_TOKEN=${BOT_TOKEN}
+CHANNEL_ID=${CHANNEL_ID}
+PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+CHECK_INTERVAL=${CHECK_INTERVAL}
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${POSTGRES_DB}
+DB_USER=${POSTGRES_USER}
+DB_PASSWORD=${POSTGRES_PASSWORD}
+
+========================================
+
+=== bot\src\text_utils.py ===
+
+import re
+import html
+
+def clean_telegram_html(text: str) -> str:
+    return re.sub(r"</?think>", "", text)
+
+def convert_markdown_links_to_html(text: str) -> str:
+    def replace_link(match):
+        return f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, text)
+
+========================================
+
+=== bot\src\config.py ===
+
+# bot/src/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+
+========================================
+
+=== bot\src\telegram_utils.py ===
+
+import logging
+from aiogram import Bot
+
+logger = logging.getLogger(__name__)
+
+async def send_long_message(bot: Bot, chat_id: int, text: str, parse_mode=None, **kwargs):
+    limit = 4096
+    for i in range(0, len(text), limit):
+        part = text[i:i+limit]
+        await bot.send_message(chat_id, part, parse_mode=parse_mode, **kwargs)
+
+========================================
+
+=== bot\src\bot.py ===
+
+import os
+import asyncio
+import logging
+from perplexity_ai import init_perplexity, ask_perplexity
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
+
+# Исправленные импорты (убраны точки)
+from state_utils import load_state, save_state, load_pinned_message_id, save_pinned_message_id
+from scraper import fetch_products
+from perplexity import ask_perplexity, init_perplexity
+from telegram_utils import send_long_message
+from text_utils import clean_telegram_html, convert_markdown_links_to_html
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "18000"))
+
+
+
+# Инициализация Perplexity API
+if PERPLEXITY_API_KEY:
+    init_perplexity(PERPLEXITY_API_KEY)
+    answer = ask_perplexity("Какая польза у коллагена?")
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.channel_post()
+async def channel_post_handler(message: types.Message):
+    if not PERPLEXITY_API_KEY:
+        await message.reply("Perplexity API ключ не задан.")
+        return
+
+    user_query = message.text
+    if not user_query:
+        return
+
+    try:
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.full_name}</a>' if message.from_user else None
+
+        await message.reply("Запрос отправлен, ожидайте ответа...")
+        logger.info(f"Обработка запроса: {user_query[:50]}...")
+        
+        loop = asyncio.get_event_loop()
+        raw_answer = await loop.run_in_executor(None, ask_perplexity, user_query)
+        
+        cleaned_answer = clean_telegram_html(raw_answer)
+        answer_with_links = convert_markdown_links_to_html(cleaned_answer)
+
+        reply_text = f"{mention}, {answer_with_links}" if mention else answer_with_links
+
+        await send_long_message(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text=reply_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.info("Ответ успешно отправлен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        await message.reply("Произошла ошибка при обработке вашего запроса.")
+
+async def price_scraping_loop(bot: Bot):
+    await asyncio.sleep(10)
+    logger.info("Запущен цикл отслеживания цен")
+    
+    while True:
+        try:
+            products = fetch_products()
+            old_state = load_state()
+            pinned_message_id = load_pinned_message_id()
+            new_state = {}
+            price_drop_messages = []
+            price_increase_detected = False
+
+            for product in products:
+                try:
+                    product_id = str(product.get('id', ''))
+                    product_name = str(product.get('name', 'Без названия'))
+                    
+                    # Обработка цены
+                    new_price = product.get('price', 0)
+                    if isinstance(new_price, dict):
+                        new_price = new_price.get('current', 0)
+                    new_price = float(new_price)
+                    
+                    # Если товара нет в старом состоянии
+                    if product_id not in old_state:
+                        new_state[product_id] = {
+                            'price': new_price,
+                            'last_notified_price': new_price
+                        }
+                        continue
+                    
+                    # Получаем данные из старого состояния
+                    state_data = old_state.get(product_id, {})
+                    old_price = float(state_data.get('price', new_price))
+                    last_notified = float(state_data.get('last_notified_price', old_price))
+                    
+                    # Сохраняем новое состояние
+                    new_state[product_id] = {
+                        'price': new_price,
+                        'last_notified_price': last_notified
+                    }
+
+                    # Проверяем изменения цены
+                    if new_price < old_price and new_price != last_notified:
+                        msg = f"📉 Цена на '{product_name}' снизилась: {old_price} ₽ → {new_price} ₽"
+                        price_drop_messages.append(msg)
+                        new_state[product_id]['last_notified_price'] = new_price
+                    elif new_price > old_price:
+                        price_increase_detected = True
+                        new_state[product_id]['last_notified_price'] = new_price
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Пропускаем товар: {e}")
+
+            if price_drop_messages:
+                full_message = "🔥 **АКЦИЯ!**\n\n" + "\n".join(price_drop_messages)
+                sent_message = await bot.send_message(CHANNEL_ID, full_message, parse_mode="Markdown")
+                await bot.pin_chat_message(CHANNEL_ID, sent_message.message_id)
+                save_pinned_message_id(sent_message.message_id)
+            elif price_increase_detected and pinned_message_id:
+                await bot.unpin_chat_message(CHANNEL_ID, pinned_message_id)
+                save_pinned_message_id(None)
+
+            save_state(new_state)
+            logger.info(f"Обработано {len(products)} товаров, изменений: {len(price_drop_messages)}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле отслеживания цен: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+        
+@router.message(Command("stats"))
+async def send_stats(message: types.Message):
+    try:
+        stats = "📊 Статистика базы данных:\n"
+        stats += f"• Доступ в pgAdmin: http://localhost:6432\n"
+        stats += f"  Логин: admin@admin.com\n"
+        stats += f"  Пароль: metallica"
+        await message.reply(stats)
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await message.reply("Ошибка получения статистики")
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    asyncio.create_task(price_scraping_loop(bot))
+    logger.info("Бот запущен и слушает канал...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+========================================
+
+=== bot\src\state_utils.py ===
+
+import logging
+from database import Database 
+
+logger = logging.getLogger(__name__)
+
+def load_state():
+    try:
+        db = Database.get_instance()
+        return db.load_state('price_state')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+        return {}
+
+def save_state(state):
+    try:
+        db = Database.get_instance()
+        db.save_state('price_state', state)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_pinned_message_id():
+    try:
+        db = Database.get_instance()
+        state = db.load_state('pinned_message')
+        return state.get('pinned_message_id')
+    except Exception as e:
+        logger.error(f"Ошибка загрузки закрепленного сообщения: {e}")
+        return None
+
+def save_pinned_message_id(message_id):
+    try:
+        db = Database.get_instance()
+        db.save_state('pinned_message', {'pinned_message_id': message_id})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения закрепленного сообщения: {e}")
+
+========================================
+
+=== bot\src\perplexity.py ===
+
+import requests
+import logging
+from typing import List, Dict, Optional
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
+class PerplexityAPI:
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.db = ProductDatabase()
+        self.db.sync_demo_products()  # Загружаем демо-товары
+    
+    def ask(self, query: str) -> str:
+        try:
+            relevant = self.db.search_products(query)
+            product_context = ""
+            if relevant:
+                product_context = "\n\n### Информация о продуктах:\n"
+                for prod in relevant:
+                    product_context += (
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
+                    )
+            # Формируем “инструкции” для ИИ
+            system_prompt = (
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
+                f"{product_context}"
+            )
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Используй Markdown для ссылок\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com)\n"
+                "- Для медицинских советов добавляй предупреждение\n\n"
+                f'Вопрос: "{query}"'
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.3,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.post(
+                self.BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            resp_json = response.json()
+            return resp_json["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
+
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
+
+def init_perplexity(api_key: str):
+    global perplexity_api
+    perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
+
+
+========================================
+
+=== bot\src\scraper.py ===
+
+import requests
+import logging
+from database import Database
+
+logger = logging.getLogger(__name__)
+
+def fetch_products():
+    try:
+        url = "https://ng.nlstar.com/ru/api/store/city/2214/all-products/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        logger.info(f"Запрос данных с {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        products = data.get("products", [])
+        logger.info(f"Получено {len(products)} товаров")
+        
+        # Нормализация данных
+        normalized = []
+        for p in products:
+            try:
+                # Обработка цены
+                price = p.get('price', 0)
+                if isinstance(price, dict):
+                    # Если цена приходит в виде словаря, берем основное значение
+                    price = price.get('current', 0)
+                if isinstance(price, str):
+                    price = price.replace(' ', '').replace(',', '.')
+                
+                # Преобразуем в float
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = 0.0
+                
+                normalized.append({
+                    'id': str(p.get('id', '')),
+                    'name': str(p.get('name') or p.get('short_name') or "Без названия"),
+                    'short_name': str(p.get('short_name', '')),
+                    'price': price,
+                    'category': str(p.get('category', ''))})
+            except Exception as e:
+                logger.error(f"Ошибка обработки товара: {e}")
+        
+        # Сохраняем в БД
+        db = Database.get_instance()
+        saved = db.save_products(normalized)
+        logger.info(f"Сохранено {saved} товаров в БД")
+        
+        return normalized
+    except Exception as e:
+        logger.error(f"Ошибка получения продуктов: {e}")
+        return []
+
+========================================
+
+=== bot\src\database.py ===
+
+import psycopg2
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL")
+    
+    def create_tables(self):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+    
+    def save_products(self, products):
+        if not self.conn or not products:
+            return 0
+            
+        saved_count = 0
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Проверяем и преобразуем данные
+                        product_id = str(product.get('id', ''))
+                        name = str(product.get('name', ''))
+                        short_name = str(product.get('short_name', ''))
+                        price = float(product.get('price', 0))
+                        category = str(product.get('category', ''))
+                        
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (product_id, name, short_name, price, category))
+                        
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (product_id, price))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"Общая ошибка при сохранении товаров: {e}")
+        
+        return saved_count
+    
+    def save_state(self, key, state):
+        if not self.conn:
+            return
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO bot_state (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value
+                """, (key, json.dumps(state)))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния: {e}")
+    
+    def load_state(self, key):
+        if not self.conn:
+            return {}
+            
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("SELECT value FROM bot_state WHERE key = %s", (key,))
+                result = cursor.fetchone()
+                return json.loads(result[0]) if result else {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки состояния: {e}")
+            return {}
+
+========================================
+
+=== bot\src\postgres_db.py ===
+
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import logging
+import time
+import json
+
+logger = logging.getLogger(__name__)
+
+class PostgresDB:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PostgresDB, cls).__new__(cls)
+            cls._instance._init_db()
+        return cls._instance
+    
+    def _init_db(self):
+        self.conn = None
+        self.connect()
+        self.create_tables()
+    
+    def connect(self, retries=5, delay=3):
+        for i in range(retries):
+            try:
+                self.conn = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "db"),
+                    port=os.getenv("DB_PORT", "5432"),
+                    dbname=os.getenv("DB_NAME", "nlstore"),
+                    user=os.getenv("DB_USER", "mawr"),
+                    password=os.getenv("DB_PASSWORD", "metallica")
+                )
+                self.conn.autocommit = True
+                logger.info("Успешное подключение к PostgreSQL")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка подключения к БД (попытка {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(delay)
+        
+        logger.error("Не удалось подключиться к PostgreSQL после нескольких попыток")
+    
+    def create_tables(self):
+        try:
+            with self.conn.cursor() as cursor:
+                # Таблица продуктов
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id VARCHAR(50) PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        short_name TEXT,
+                        price FLOAT NOT NULL,
+                        category TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица истории цен
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS price_history (
+                        id SERIAL PRIMARY KEY,
+                        product_id VARCHAR(50) NOT NULL,
+                        price FLOAT NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Таблица состояния
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key VARCHAR(50) PRIMARY KEY,
+                        value JSONB NOT NULL
+                    )
+                """)
+                
+                logger.info("Таблицы в БД созданы или уже существуют")
+        except Exception as e:
+            logger.error(f"Ошибка создания таблиц: {e}")
+
+    def save_products(self, products):
+        if not products:
+            logger.warning("Нет продуктов для сохранения")
+            return
+        
+        logger.info(f"Сохранение {len(products)} товаров в БД...")
+        saved_count = 0
+        
+        try:
+            with self.conn.cursor() as cursor:
+                for product in products:
+                    try:
+                        # Сохраняем продукт
+                        cursor.execute("""
+                            INSERT INTO products (id, name, short_name, price, category)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                short_name = EXCLUDED.short_name,
+                                price = EXCLUDED.price,
+                                category = EXCLUDED.category,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (
+                            product['id'],
+                            product.get('name', ''),
+                            product.get('short_name', ''),
+                            product['price'],
+                            product.get('category', '')
+                        ))
+                        
+                        # Сохраняем в историю цен
+                        cursor.execute("""
+                            INSERT INTO price_history (product_id, price)
+                            VALUES (%s, %s)
+                        """, (
+                            product['id'],
+                            product['price']
+                        ))
+                        
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка сохранения продукта {product.get('id')}: {e}")
+            
+            logger.info(f"Успешно сохранено {saved_count} товаров")
+            return saved_count
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении товаров: {e}")
+            return 0
+
+========================================
+
+=== bot\Dockerfile ===
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src
+
+# Явно указываем рабочую директорию для src
+WORKDIR /app/src
+
+CMD ["python", "-u", "bot.py"]
+
+========================================
+
+=== bot\requirements.txt ===
+
+aiogram==3.4.1
+python-dotenv==1.0.1
+requests==2.32.0
+beautifulsoup4==4.12.3
+psycopg2-binary==2.9.9
+
+========================================
+
+=== .env ===
+
+# .env
+BOT_TOKEN=8159036536:AAGl_OcC5cjpeZ71t9-ZMusl0eK3t33mSlg
+CHANNEL_ID=@telo_v_poryadke_nlstar
+LOG_LEVEL=INFO
+X_AUTH_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiIxNzJlMWQyNi0zYjRhLTQxODMtODk4My1hOTI3NTMzZDkwNGUiLCJpbmJveF9pZCI6MTB9.epnRyvUy1pb2q9bRr-2dhPtpAeLF-G1Ob_xa8mC6g9A
+CHECK_INTERVAL=18000
+PERPLEXITY_API_KEY=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
+DB_HOST=db
+DB_PORT=5432
+PGADMIN_PORT=6432
+
+# PostgreSQL
+POSTGRES_USER=mawr
+POSTGRES_PASSWORD=metallica
+POSTGRES_DB=nlstore
+
+# pgAdmin
+PGADMIN_DEFAULT_EMAIL=admin@admin.com
+PGADMIN_DEFAULT_PASSWORD=metallica
+
+
+========================================
+
+=== pgadmin\setup.sh ===
+
+#!/bin/bash
+
+# Ожидаем запуск pgAdmin
+while ! curl -s http://localhost:80 > /dev/null; do
+  echo "Ожидание запуска pgAdmin..."
+  sleep 5
+done
+
+# Добавляем сервер
+curl -v -X POST "http://localhost:80/browser/server/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "NL Store DB",
+    "host": "db",
+    "port": 5432,
+    "username": "'"$POSTGRES_USER"'",
+    "password": "'"$POSTGRES_PASSWORD"'",
+    "db": "'"$POSTGRES_DB"'",
+    "sslmode": "prefer"
+  }'
+
+echo "Сервер NL Store DB успешно добавлен в pgAdmin"
+
+========================================
+
+=== docker-compose.yml ===
+
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src  # Рабочая директория теперь в src
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ./.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+========================================
+
+=== .gitignore ===
+
+# Data files
+*.json
+*.db
+*.csv
+.*
+
+# Environment
+.env
+venv/
+bot/.env
+
+# Docker
+data/
+
+========================================
+
+
+
+========================================
+
+
+
+========================================
+
+
+
+========================================
+
+=== docker-compose.infrastructure.yml ===
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: mawr
+      POSTGRES_PASSWORD: metallica
+      POSTGRES_DB: nlstore
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mawr -d nlstore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: metallica
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "6432:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+
+========================================
+
+
+
+========================================
+
+=== docker-compose.infrastructure.yml ===
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: mawr
+      POSTGRES_PASSWORD: metallica
+      POSTGRES_DB: nlstore
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mawr -d nlstore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: metallica
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "6432:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+
+========================================
+

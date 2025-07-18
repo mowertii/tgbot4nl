@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  bot:
+    build: ./bot
+    env_file: 
+      - ./.env
+      - ./bot/.env
+    working_dir: /app/src
+    environment:
+      - DB_HOST=localhost
+    network_mode: "host"
+    restart: unless-stopped
+    depends_on: []

@@ -1,71 +1,95 @@
 import requests
 import logging
-from database import ProductDatabase
+from typing import List, Dict, Optional
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# --- Демонстрационная "БД" продуктов (можно заменить на реальную) ---
+class ProductDatabase:
+    def __init__(self):
+        self.products = []
+    
+    def sync_demo_products(self):
+        demo_products = [
+            {
+                "id": 1,
+                "name": "Коллаген Ультра",
+                "description": "Гидролизованный коллаген с витамином C",
+                "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
+                "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
+                "usage": "Принимать по 1 саше в день, растворив в воде"
+            },
+            # Можно добавить еще продукты
+        ]
+        self.products = demo_products
+    
+    def search_products(self, query: str) -> List[Dict]:
+        found = []
+        query_l = query.lower()
+        for prod in self.products:
+            text = (prod['name'] + ' ' + prod['description'] + ' ' + prod['benefits']).lower()
+            if query_l in text:
+                found.append(prod)
+        return found
+
+
+# --- Главный класc для общения с Perplexity API ---
 class PerplexityAPI:
-    def __init__(self, api_key):
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
+
+    def __init__(self, api_key: str):
         self.api_key = api_key
         self.db = ProductDatabase()
-        self.sync_products()
+        self.db.sync_demo_products()
 
-    def sync_products(self):
-        """Синхронизация продуктов (заглушка)"""
-        try:
-            logger.info("Синхронизация продуктов...")
-            # В реальной реализации здесь будет запрос к API
-            # Сейчас используем демо-данные
-            demo_products = [
-                {
-                    "id": 1,
-                    "name": "Коллаген Ультра",
-                    "description": "Гидролизованный коллаген с витамином C",
-                    "benefits": "Улучшает состояние кожи, волос и ногтей, поддерживает здоровье суставов",
-                    "ingredients": "Коллаген гидролизованный (10 г), витамин C (80 мг)",
-                    "usage": "Принимать по 1 саше в день, растворив в воде"
-                }
-            ]
-            
-            for product in demo_products:
-                self.db.add_product(product)
-                
-        except Exception as e:
-            logger.error(f"Ошибка синхронизации: {e}")
+    # Делаем retry: 3 попытки, пауза 3 сек, только если timeout!
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(3),
+        retry=retry_if_exception_type(requests.exceptions.Timeout)
+    )
+    def _ask(self, payload, headers):
+        response = requests.post(
+            self.BASE_URL,
+            json=payload,
+            headers=headers,
+            timeout=12  # уменьшили до 12 секунд!
+        )
+        response.raise_for_status()
+        return response.json()
 
     def ask(self, query: str) -> str:
-        """Генерация ответа с использованием LLM"""
         try:
-            # Поиск релевантных продуктов
-            relevant_products = self.db.search_products(query)
+            relevant = self.db.search_products(query)
             product_context = ""
-            
-            if relevant_products:
-                logger.info(f"Найдено продуктов: {len(relevant_products)}")
+            if relevant:
                 product_context = "\n\n### Информация о продуктах:\n"
-                for product in relevant_products:
+                for prod in relevant:
                     product_context += (
-                        f"- {product['name']}: {product['description']}\n"
-                        f"  Польза: {product['benefits']}\n"
+                        f"- {prod['name']}: {prod['description']}\n"
+                        f"  Польза: {prod['benefits']}\n"
                     )
-
-            # Формирование промпта
             system_prompt = (
-                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL.\n"
+                "Ты - Нутрициолог-эксперт от NL INTERNATIONAL. "
+                "Отвечай строго по теме, не давай прямых медицинских диагнозов.\n"
                 f"{product_context}"
             )
-            
-            user_prompt = f"""
-Инструкции:
-- Отвечай на русском
-- Будь точным и кратким
-- Используй Markdown для ссылок
-- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com)
-- Для медицинских советов добавляй предупреждение
-
-Вопрос: "{query}"
-"""
-
+            # В методе ask класса PerplexityAPI
+            user_prompt = (
+                "Инструкции:\n"
+                "- Отвечай на русском\n"
+                "- Будь точным и кратким\n"
+                "- Для источников используй сноски в формате: [1], [2] в тексте\n"
+                "- В конце сообщения добавь список источников в формате:\n"
+                "      [1]: полный_URL_источника\n"
+                "      [2]: полный_URL_источника\n"
+                "- При упоминании компании: [NL INTERNATIONAL](https://nlstar.com/ref/aU37in)\n"
+                f'Вопрос: "{query}"'
+            )
             payload = {
                 "model": "sonar-pro",
                 "messages": [
@@ -75,38 +99,38 @@ class PerplexityAPI:
                 "max_tokens": 1000,
                 "temperature": 0.3,
             }
-            
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             }
-
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
-            
+            # Используем защищённый вызов с повтором
+            resp_json = self._ask(payload, headers)
+            return resp_json["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            logger.error("Timeout при обращении к Perplexity API.")
+            return "Сервер перегружен, не удалось получить ответ за разумное время. Попробуйте повторить позже."
         except Exception as e:
-            logger.error(f"Ошибка генерации ответа: {e}")
-            return "Произошла ошибка при обработке запроса."
+            logger.error(f"Ошибка при генерации ответа: {e}")
+            return "Произошла ошибка при получении консультации. Попробуйте позже."
 
-# Синглтон
-perplexity_api = None
+# --- Синглтон для общего доступа ----
+perplexity_api: Optional[PerplexityAPI] = None
 
-def ask_perplexity(query: str) -> str:
-    try:
-        if not perplexity_api:
-            return "Ошибка: Perplexity API не инициализирован"
-        
-        return perplexity_api.ask(query)
-    except Exception as e:
-        logger.error(f"Критическая ошибка в ask_perplexity: {e}", exc_info=True)
-        return "Произошла внутренняя ошибка при обработке запроса."
-    
-def init_perplexity(api_key):
+def init_perplexity(api_key: str):
     global perplexity_api
     perplexity_api = PerplexityAPI(api_key)
+    logger.info("Perplexity API инициализирован.")
+
+def ask_perplexity(query: str) -> str:
+    if not perplexity_api:
+        return "Perplexity API не инициализирован. Вызовите init_perplexity(api_key)."
+    return perplexity_api.ask(query)
+
+# --- Пример использования (для теста запусти этот файл напрямую) ---
+if __name__ == "__main__":
+    import os
+    API_KEY = os.getenv("PERPLEXITY_API_KEY", "your_api_key_here")
+    init_perplexity(API_KEY)
+    while True:
+        q = input("Ваш вопрос по нутрициологии: ")
+        print(ask_perplexity(q))
